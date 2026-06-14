@@ -1,4 +1,4 @@
-const CACHE_NAME = 'myg-trip-v21';
+const CACHE_NAME = 'myg-trip-v32';
 const urlsToCache =[
 './',
 './index.html',
@@ -12,8 +12,11 @@ const urlsToCache =[
 './frontend/js/rolodex.js',
 './frontend/js/registration.js',
 './frontend/js/profile.js',
+'./frontend/js/participants.js',
 './frontend/js/Pairing_Grouping.js',
 './frontend/js/attendance.js',
+'./frontend/js/finance.js',
+'./frontend/js/minutes.js',
 './frontend/js/files.js',
 './frontend/js/settings.js'
 ];
@@ -29,11 +32,11 @@ self.addEventListener('activate', event => {
 event.waitUntil(
 caches.keys().then(cacheNames => {
 return Promise.all(
- cacheNames.map(cacheName => {
-   if (cacheName !== CACHE_NAME) {
-     return caches.delete(cacheName);
-   }
- })
+cacheNames.map(cacheName => {
+if (cacheName !== CACHE_NAME) {
+  return caches.delete(cacheName);
+}
+})
 );
 }).then(() => self.clients.claim()) // Instantly take control of uncontrolled clients
 );
