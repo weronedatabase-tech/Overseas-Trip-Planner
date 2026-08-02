@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Register | Overseas Trip Planner</title>
+<title>Register | Overseas Trip</title>
 <link rel="manifest" href="manifest.json">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="frontend/js/tailwind.config.js"></script>
@@ -18,7 +18,7 @@
 <div id="unauthLayout" class="flex-1 flex flex-col w-full relative overflow-y-auto">
 <header class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0 bg-white dark:bg-gray-900 shadow-sm">
 <div class="flex flex-col">
-  <h1 class="font-black text-xl text-primary tracking-tight leading-tight">Trip Planner</h1>
+  <h1 class="font-black text-xl text-primary tracking-tight leading-tight">Overseas Trip</h1>
   <span id="unauthTripName" class="text-[10px] font-bold text-gray-500 uppercase tracking-wider hidden-force"></span>
 </div>
 <div class="flex gap-1.5">
@@ -41,7 +41,7 @@
  </div>
  <form id="regForm" onsubmit="event.preventDefault(); submitRegistration(this.querySelector('button[type=submit]'));" class="space-y-6">
    <div id="membersContainer" class="space-y-6"></div>
-   <button type="button" onclick="addRegMember()" class="w-full bg-transparent text-primary dark:text-blue-400 font-bold py-4 rounded-xl border-2 border-primary dark:border-blue-400 border-dashed hover:bg-blue-50 dark:hover:bg-gray-800 transition">+ Add Group Member</button>
+   <button type="button" onclick="addRegMember()" class="w-full bg-transparent text-primary dark:text-blue-400 font-bold py-4 rounded-xl border-2 border-primary dark:border-blue-400 border-dashed hover:bg-blue-50 dark:hover:bg-gray-800 transition">+ Add Family Member</button>
    <div class="pt-6">
      <button type="submit" class="w-full bg-green-600 text-white font-bold text-lg py-4 rounded-xl hover:bg-green-700 flex justify-center items-center shadow-lg transition">
        <span class="btn-text">Submit Registration</span><div class="btn-spinner spinner-white hidden-force ml-2"></div>
