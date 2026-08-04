@@ -1,4 +1,4 @@
-const CACHE_NAME = 'otp-mpa-v11';
+const CACHE_NAME = 'otp-mpa-v14';
 const urlsToCache = [
 './',
 './index.html',
