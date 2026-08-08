@@ -8,7 +8,6 @@ let rosterCols = JSON.parse(localStorage.getItem('rosterCols')) || [
 { id: 'group', label: 'Project', width: 100, visible: true },
 { id: 'room', label: 'Room', width: 120, visible: true },
 { id: 'pairings', label: 'Pairing(s)', width: 150, visible: true },
-{ id: 'bus', label: 'Bus', width: 90, visible: true },
 { id: 'gender', label: 'Gender', width: 80, visible: true },
 { id: 'nationality', label: 'Nationality', width: 110, visible: true },
 { id: 'nric', label: 'NRIC', width: 100, visible: true },
@@ -25,10 +24,6 @@ let rosterCols = JSON.parse(localStorage.getItem('rosterCols')) || [
 ];
 
 // Ensure backwards compatibility with older stored column states
-if (!rosterCols.find(c => c.id === 'bus')) {
-    const pairIdx = rosterCols.findIndex(c => c.id === 'pairings');
-    rosterCols.splice(pairIdx > -1 ? pairIdx + 1 : rosterCols.length, 0, { id: 'bus', label: 'Bus', width: 90, visible: true });
-}
 if (!rosterCols.find(c => c.id === 'medical')) {
     const otherIdx = rosterCols.findIndex(c => c.id === 'otherPoints');
     rosterCols.splice(otherIdx > -1 ? otherIdx : rosterCols.length, 0, { id: 'medical', label: 'Medical & Medications', width: 220, visible: true });
@@ -171,14 +166,7 @@ try {
 
    adminRosterData.forEach(p => {
        p.room = roomsMap[p.nric] || 'UNASSIGNED';
-       let myPairings = pairingsMap[p.nric] ? [...pairingsMap[p.nric]] : [];
-       if (p.role === 'CAREGIVER' && p.relatedTrainee) {
-           const related = adminRosterData.find(x => x.fullName.toLowerCase() === p.relatedTrainee.toLowerCase() && x.role === 'TRAINEE');
-           if (related && pairingsMap[related.nric]) {
-               myPairings.push(...pairingsMap[related.nric]);
-           }
-       }
-       p.pairings = myPairings.length > 0 ? Array.from(new Set(myPairings)).join(', ') : 'NONE';
+       p.pairings = pairingsMap[p.nric] ? pairingsMap[p.nric].join(', ') : 'NONE';
    });
 
    renderRosterTable();
@@ -312,13 +300,8 @@ document.removeEventListener('touchend', onMouseUp);
 
 let draggedColId = null;
 window.onColDragStart = function(e, colId) {
-if (resizingCol) {
-    e.preventDefault();
-    return;
-}
 draggedColId = colId;
-e.dataTransfer.effectAllowed = 'move';
-e.dataTransfer.setData('text/plain', colId);
+e.dataTransfer.effectAllowed = "move";
 e.target.classList.add('opacity-50');
 }
 window.onColDragEnd = function(e) {
@@ -546,8 +529,6 @@ data.forEach(p => {
                html += `<td class="${baseClass}" ${styleStr}>${hasNotes ? `<span class="text-orange-700 dark:text-orange-400 font-medium whitespace-pre-wrap leading-tight">${p.otherPoints}</span>` : `<span class="text-gray-400 italic">NONE</span>`}</td>`;
            } else if (c.id === 'room') {
                html += `<td class="${baseClass} font-bold" ${styleStr}>${(p.room || 'UNASSIGNED').toUpperCase()}</td>`;
-           } else if (c.id === 'bus') {
-               html += `<td class="${baseClass} font-bold" ${styleStr}>${(p.bus || 'UNASSIGNED').toUpperCase()}</td>`;
            } else if (c.id === 'pairings') {
                html += `<td class="${baseClass}" ${styleStr}>${(p.pairings || 'NONE').toUpperCase()}</td>`;
            } else if (c.id === 'emergencyName') {
