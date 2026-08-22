@@ -174,7 +174,7 @@ renderFeeTracker();
 }
 
 function updateFinanceConfig(key, value) {
-if (key === 'globalPaxMode' || key === 'finalOptionId' || key === 'perPersonFee') {
+if (key === 'globalPaxMode' || key === 'finalOptionId' || key === 'perPersonFee' || key === 'payNowNumber' || key === 'showPaymentSection') {
     financeConfig[key] = value;
 } else if (key === 'globalPaxCount') {
     financeConfig[key] = parseInt(value) || 0;
@@ -1056,7 +1056,7 @@ cardsData.forEach(c => {
     const checkColor = c.isPaid ? 'text-green-600 dark:text-green-400 bg-green-200 dark:bg-green-900' : 'text-transparent bg-gray-100 dark:bg-gray-700';
 
     cardsHtml += `
-    <div class="flex flex-col p-3 rounded-xl border ${paidClass} shadow-sm transition relative overflow-hidden">
+    <div class="flex flex-col p-3 rounded-xl border ${paidClass} shadow-sm transition relative overflow-hidden h-full">
         <div class="flex justify-between items-start gap-3 mb-3">
             <div class="flex flex-col flex-1 min-w-0">
                 <div class="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -1073,58 +1073,59 @@ cardsData.forEach(c => {
             </button>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-800">
+        <div class="grid grid-cols-2 gap-2 p-2 bg-gray-50/50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-800 mt-auto">
             <div>
-                <label class="block text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Custom Deviation (SGD)</label>
-                <input type="number" step="0.01" value="${c.dev}" oninput="formatMoneyInput(this, false); if(!financeConfig.feeDeviations['${c.poc}']) financeConfig.feeDeviations['${c.poc}'] = {}; financeConfig.feeDeviations['${c.poc}'].amount = parseFloat(this.value.replace(/,/g, ''))||0; queueFinanceUpdate();" onblur="formatMoneyInput(this, true); updateFeeDeviation('${c.poc}', 'amount', this.value)" class="w-full px-2 py-1 text-xs font-bold border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-950 focus:outline-none focus:border-primary shadow-sm text-right" ${c.isPaid ? 'disabled opacity-70' : ''}>
+                <label class="block text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Deviation (+/- SGD)</label>
+                <input type="number" step="0.01" value="${c.dev}" oninput="formatMoneyInput(this, false); if(!financeConfig.feeDeviations['${c.poc}']) financeConfig.feeDeviations['${c.poc}'] = {}; financeConfig.feeDeviations['${c.poc}'].amount = parseFloat(this.value.replace(/,/g, ''))||0; queueFinanceUpdate();" onblur="formatMoneyInput(this, true); updateFeeDeviation('${c.poc}', 'amount', this.value)" class="w-full px-2 py-1 text-xs font-bold border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-950 focus:outline-none focus:border-primary shadow-sm text-right h-[28px]" ${c.isPaid ? 'disabled opacity-70' : ''}>
             </div>
             <div>
-                <label class="block text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Final Expected</label>
-                <div class="w-full px-2 py-1 text-sm font-black text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800 shadow-sm text-right">
+                <label class="block text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Expected (SGD)</label>
+                <div class="w-full px-2 py-1 text-sm font-black text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800 shadow-sm text-right flex items-center justify-end h-[28px]">
                     ${c.finalExpected.toLocaleString('en-US', {minimumFractionDigits:2})}
                 </div>
             </div>
             <div class="col-span-2">
-                <input type="text" value="${c.rem}" onchange="updateFeeDeviation('${c.poc}', 'remarks', this.value)" placeholder="Remarks for deviation (e.g. Subsidy applied)" class="w-full px-2 py-1 text-[10px] font-medium border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-950 focus:outline-none focus:border-primary shadow-sm" ${c.isPaid ? 'disabled opacity-70' : ''}>
+                <input type="text" value="${c.rem.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" onchange="updateFeeDeviation('${c.poc}', 'remarks', this.value)" placeholder="Remarks for deviation (e.g. Subsidy applied)" class="w-full px-2 py-1 text-[10px] font-medium border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-950 focus:outline-none focus:border-primary shadow-sm h-[28px]" ${c.isPaid ? 'disabled opacity-70' : ''}>
             </div>
         </div>
     </div>`;
 });
 
 cont.innerHTML = `
-<div class="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-3 mb-4">
-    <div class="flex flex-col md:flex-row justify-between items-center gap-3">
-        <div class="flex items-center gap-2 w-full md:w-auto">
-            <div class="flex flex-col gap-2 w-full md:w-auto">
-                <div class="flex items-center gap-2">
-                    <label class="text-[10px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider shrink-0">Global Per-Pax Fee (SGD):</label>
-                    <input type="number" step="0.01" value="${baseFee}" oninput="formatMoneyInput(this, false); financeConfig.perPersonFee = parseFloat(this.value.replace(/,/g, ''))||0; queueFinanceUpdate();" onblur="formatMoneyInput(this, true); updateFinanceConfig('perPersonFee', parseFloat(this.value.replace(/,/g, ''))||0)" class="w-24 text-sm font-black border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm text-right">
-                </div>
-                <div class="flex items-center gap-2">
-                    <label class="text-[10px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider shrink-0">PayNow Number:</label>
-                    <input type="text" maxlength="8" value="${financeConfig.payNowNumber || ''}" onchange="updateFinanceConfig('payNowNumber', this.value.trim())" class="w-24 text-sm font-black border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm text-center">
-                    <label class="flex items-center gap-2 cursor-pointer ml-2">
-                        <input type="checkbox" ${financeConfig.showPaymentSection ? 'checked' : ''} onchange="updateFinanceConfig('showPaymentSection', this.checked)" class="w-4 h-4 text-primary focus:ring-primary border-gray-300 rounded">
-                        <span class="text-[10px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider">Show Payment Section</span>
-                    </label>
-                </div>
+<div class="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-2 mb-3 flex flex-col gap-2">
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2 md:gap-3">
+            <div class="flex items-center gap-1.5">
+                <label class="text-[9px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider">Per-Pax (SGD):</label>
+                <input type="number" step="0.01" value="${baseFee}" oninput="formatMoneyInput(this, false); financeConfig.perPersonFee = parseFloat(this.value.replace(/,/g, ''))||0; queueFinanceUpdate();" onblur="formatMoneyInput(this, true); updateFinanceConfig('perPersonFee', parseFloat(this.value.replace(/,/g, ''))||0)" class="w-16 text-xs font-black border border-gray-300 dark:border-gray-600 rounded px-1.5 py-1 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm text-right">
             </div>
-        <div class="flex items-center gap-3 w-full md:w-auto bg-gray-50 dark:bg-gray-950 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700">
-            <div class="text-right">
-                <span class="block text-[9px] uppercase font-bold text-gray-400 tracking-widest">Collected</span>
-                <span class="text-sm font-black text-green-600 dark:text-green-400">SGD ${totalCollected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>
+            <div class="flex items-center gap-1.5">
+                <label class="text-[9px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider">PayNow:</label>
+                <input type="text" maxlength="8" value="${financeConfig.payNowNumber || ''}" onchange="updateFinanceConfig('payNowNumber', this.value.trim())" class="w-20 text-xs font-black border border-gray-300 dark:border-gray-600 rounded px-1.5 py-1 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm text-center">
             </div>
-            <div class="w-px h-6 bg-gray-300 dark:bg-gray-700"></div>
-            <div class="text-right">
-                <span class="block text-[9px] uppercase font-bold text-gray-400 tracking-widest">Expected Total</span>
-                <span class="text-sm font-black text-blue-700 dark:text-blue-400">SGD ${totalExpected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" ${financeConfig.showPaymentSection ? 'checked' : ''} onchange="updateFinanceConfig('showPaymentSection', this.checked)" class="w-3.5 h-3.5 text-primary focus:ring-primary border-gray-300 rounded">
+                <span class="text-[9px] uppercase font-bold text-gray-500 dark:text-gray-400 tracking-wider">Show Payment</span>
+            </label>
+        </div>
+        
+        <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-950 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 w-full md:w-auto justify-between md:justify-start">
+            <div class="text-left">
+                <span class="block text-[8px] uppercase font-bold text-gray-400 tracking-widest leading-none mb-0.5">Collected</span>
+                <span class="text-xs font-black text-green-600 dark:text-green-400 leading-none">SGD ${totalCollected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>
+            </div>
+            <div class="w-px h-5 bg-gray-300 dark:bg-gray-700 hidden md:block"></div>
+            <div class="text-right md:text-left">
+                <span class="block text-[8px] uppercase font-bold text-gray-400 tracking-widest leading-none mb-0.5">Expected Total</span>
+                <span class="text-xs font-black text-blue-700 dark:text-blue-400 leading-none">SGD ${totalExpected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>
             </div>
         </div>
     </div>
-    <div class="mt-3 relative">
-        <input type="text" id="feeSearchInput" oninput="handleFeeSearch()" value="${finSearchQuery}" placeholder="Fuzzy search families..." class="w-full p-2 pl-8 pr-8 border border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm transition">
-        <svg class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-        <button onclick="clearSearch('feeSearchInput', 'handleFeeSearch')" class="absolute right-2 top-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+    
+    <div class="relative">
+        <input type="text" id="feeSearchInput" oninput="handleFeeSearch()" value="${finSearchQuery}" placeholder="Fuzzy search families..." class="w-full py-1.5 pl-7 pr-7 border border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-sm transition">
+        <svg class="w-3.5 h-3.5 absolute left-2.5 top-2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+        <button onclick="clearSearch('feeSearchInput', 'handleFeeSearch')" class="absolute right-1.5 top-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
     </div>
 </div>
 
