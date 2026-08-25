@@ -7,6 +7,7 @@ function showToast(msg, isError = false) {
  setTimeout(() => t.classList.add('opacity-0'), 4000);
 }
 
+window.cleanTrailingComma = function(input) { setTimeout(() => { if (document.activeElement === input) return; if (input && input.value) { const names = input.value.split("|").map(x => x.trim()).filter(x => x !== ""); input.value = names.join(" | "); } }, 250); };
 function setBtnLoading(btn, isLoading) {
  if (!btn) return;
  const spinner = btn.querySelector('.btn-spinner');
@@ -77,18 +78,56 @@ function renderHeaderLegend() {
  appSettings.activeProjects.forEach(proj => {
    if(!proj) return;
    const colorCls = getProjectColor(proj); const shortName = getProjectAbbreviation(proj);
-   html += `<span class="px-1.5 py-0.5 rounded text-[9px] md:text-[10px] font-bold border shadow-sm cursor-help ${colorCls}" title="${proj}">${shortName}</span>`;
+   html += `<span class="px-1.5 py-0.5 rounded text-[11px] md:text-xs font-bold border shadow-sm cursor-help ${colorCls}" title="${proj}">${shortName}</span>`;
  });
  if(deskCont) deskCont.innerHTML = html;
  if(mobCont) mobCont.innerHTML = html;
 }
+
+window.getFamilyMembers = function(nric, allParticipants) {
+    const target = allParticipants.find(p => p.nric === nric);
+    if (!target) return [];
+    const targetPoc = target.pocNric || target.nric;
+    
+    let myRelatedNames = [];
+    if (target.relatedTrainee) {
+        myRelatedNames = String(target.relatedTrainee).split(/[\|,]/).map(n => n.replace(/\s+/g, '').toLowerCase()).filter(n => n);
+    }
+    let myName = (target.fullName || '').replace(/\s+/g, '').toLowerCase();
+    let myShortName = (target.shortName || '').replace(/\s+/g, '').toLowerCase();
+
+    return allParticipants.filter(p => {
+        if (p.pocNric === targetPoc && targetPoc) return true;
+        
+        let pName = (p.fullName || '').replace(/\s+/g, '').toLowerCase();
+        let pShortName = (p.shortName || '').replace(/\s+/g, '').toLowerCase();
+        
+        // Am I a Caregiver for them?
+        if (myRelatedNames.length > 0 && myRelatedNames.some(d => d.includes(pName) || pName.includes(d) || (pShortName && d.includes(pShortName)))) {
+            return true;
+        }
+        
+        // Are they a Caregiver for me?
+        if (p.role === 'CAREGIVER' && p.relatedTrainee) {
+            let theirRelated = String(p.relatedTrainee).split(/[\|,]/).map(n => n.replace(/\s+/g, '').toLowerCase()).filter(n => n);
+            if (theirRelated.some(d => d.includes(myName) || myName.includes(d) || (myShortName && d.includes(myShortName)))) {
+                return true;
+            }
+        }
+        return false;
+    });
+};
+
+window.isFamily = function(nric, allParticipants) {
+    return window.getFamilyMembers(nric, allParticipants).length > 1;
+};
 
 function applyGlobalSorting(participants) {
  if(!appSettings) return participants;
  const rules = appSettings.sortingRules || ['project', 'family', 'role', 'name'];
  const familyCounts = {};
  participants.forEach(p => { 
-    const poc = p.pocNric || p.nric;
+    const poc = p.pocNric;
     familyCounts[poc] = (familyCounts[poc] || 0) + 1; 
  });
 
@@ -102,11 +141,15 @@ function applyGlobalSorting(participants) {
            if (cmp !== 0) return cmp;
        }
        if (rule === 'family') {
-           const aPoc = a.pocNric || a.nric;
-           const bPoc = b.pocNric || b.nric;
+           const aPoc = a.pocNric;
+           const bPoc = b.pocNric;
            const aFam = familyCounts[aPoc] > 1 ? 1 : 0;
            const bFam = familyCounts[bPoc] > 1 ? 1 : 0;
            if (aFam !== bFam) return bFam - aFam;
+           if (aFam === 1 && bFam === 1) {
+               const cmp = aPoc.localeCompare(bPoc);
+               if (cmp !== 0) return cmp;
+           }
        }
        if (rule === 'role') {
            const rW = { 'CAREGIVER': 1, 'TRAINEE': 2, 'VOLUNTEER': 3 };
@@ -259,12 +302,33 @@ window.applyCaregiverLabels = function(participants) {
 
     participants.forEach(p => {
         if (p.role === 'CAREGIVER') {
-            let tName = p.relatedTrainee ? (traineeMap[String(p.relatedTrainee).toLowerCase()] || p.relatedTrainee) : '';
-            if (tName) {
-                p.caregiverFor = tName;
+            if (p.relatedTrainee) {
+                let parts = String(p.relatedTrainee).split(/[\|,]/).filter(Boolean);
+                let mapped = parts.map(n => {
+                    let raw = n.trim();
+                    let k = raw.toLowerCase();
+                    let lookupName = raw.replace(/\s*\(.*?\)\s*/g, '').toLowerCase().trim();
+                    if (traineeMap[k]) return traineeMap[k];
+                    if (traineeMap[lookupName]) return traineeMap[lookupName];
+                    const match = raw.match(/\((.*?)\)/);
+                    if (match && match[1]) return match[1].trim();
+                    return raw.replace(/\s*\(.*?\)\s*/g, '').trim();
+                });
+                p.caregiverFor = mapped.join(', ');
             }
         }
     });
+};
+
+window.renderPhoneLink = function(phone, extraClasses = '') {
+    if (!phone || phone === '-' || String(phone).trim() === '' || String(phone).toLowerCase() === 'n/a') return '-';
+    let cleaned = String(phone).replace(/[^\d+]/g, '');
+    if (cleaned.length === 8 && (cleaned.startsWith('8') || cleaned.startsWith('9'))) {
+        cleaned = '65' + cleaned;
+    } else if (cleaned.startsWith('+')) {
+        cleaned = cleaned.substring(1);
+    }
+    return `<a href="https://wa.me/${cleaned}" target="_blank" class="text-green-600 dark:text-green-400 hover:underline inline-flex items-center gap-1 w-max ${extraClasses}" title="Chat on WhatsApp" onclick="event.stopPropagation()"><svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg> ${phone}</a>`;
 };
 
 window.formatDDMmmYYYY = function(dateStr) {
@@ -280,17 +344,16 @@ window.sortParticipantsSpecial = function(arr, allParticipants) {
     if (!arr || !allParticipants) return;
     const famMap = {};
     allParticipants.forEach(x => {
-        const poc = x.pocNric || x.nric;
+        const poc = x.pocNric;
         if(!famMap[poc]) famMap[poc] = { count: 0, hasCaregiver: false };
         famMap[poc].count++;
-        if(x.role === 'CAREGIVER') famMap[poc].hasCaregiver = true;
-    });
+            });
 
     const specialSortMap = new Map();
     arr.forEach(p => {
-        const poc = p.pocNric || p.nric;
+        const poc = p.pocNric;
         const info = famMap[poc];
-        const isFamily = info ? (info.count > 1 || info.hasCaregiver) : false;
+        const isFamily = info ? (info.count > 1) : false;
         let catScore = 4;
         if (isFamily) catScore = 1;
         else if (p.role === 'TRAINEE') catScore = 2;
@@ -327,5 +390,125 @@ window.sortParticipantsSpecial = function(arr, allParticipants) {
         if (keyA.name < keyB.name) return -1;
         if (keyA.name > keyB.name) return 1;
         return 0;
+    });
+};
+
+window.setupTokenInput = function(inputId, getSuggestionsCallback) {
+    const originalInput = document.getElementById(inputId);
+    if (!originalInput || originalInput.dataset.tokenized) return;
+    originalInput.dataset.tokenized = "true";
+
+    // Hide original input but keep its functionality
+    originalInput.style.display = 'none';
+
+    // Create wrapper
+    const wrapper = document.createElement('div');
+    wrapper.className = "flex flex-wrap items-center gap-1.5 w-full p-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 focus-within:ring-1 focus-within:ring-primary cursor-text min-h-[42px]";
+    
+    const chipContainer = document.createElement('div');
+    chipContainer.className = "flex flex-wrap gap-1.5 items-center";
+    
+    const inputField = document.createElement('input');
+    inputField.type = "text";
+    inputField.className = "flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-xs font-semibold text-gray-900 dark:text-white min-w-[60px] p-0";
+    inputField.placeholder = "Search trainee...";
+    
+    const dropdown = document.createElement('div');
+    dropdown.className = "absolute z-50 w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl mt-1 hidden-force max-h-48 overflow-y-auto";
+    
+    // Wrapper must be relative for dropdown
+    const outerWrapper = document.createElement('div');
+    outerWrapper.className = "relative w-full";
+    
+    originalInput.parentNode.insertBefore(outerWrapper, originalInput);
+    outerWrapper.appendChild(originalInput);
+    outerWrapper.appendChild(wrapper);
+    outerWrapper.appendChild(dropdown);
+    
+    wrapper.appendChild(chipContainer);
+    wrapper.appendChild(inputField);
+
+    let tokens = (originalInput.value || '').split(/[\|,]/).map(s => s.trim()).filter(Boolean);
+    
+    function renderTokens() {
+        chipContainer.innerHTML = '';
+        const currentTokens = window._tokenInputs[inputId] ? window._tokenInputs[inputId].tokens : tokens;
+        currentTokens.forEach((t, i) => {
+            const chip = document.createElement('span');
+            chip.className = "inline-flex items-center px-2 py-1 rounded-md text-xs font-black bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 uppercase tracking-widest";
+            chip.innerHTML = `
+                ${t}
+                <button type="button" class="ml-1 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 focus:outline-none flex-shrink-0" onclick="event.stopPropagation(); window.removeTokenFromInput('${inputId}', ${i})">
+                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>
+                </button>
+            `;
+            chipContainer.appendChild(chip);
+        });
+        originalInput.value = currentTokens.join(' | ');
+        originalInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    
+    if (!window._tokenInputs) window._tokenInputs = {};
+    window._tokenInputs[inputId] = {
+        tokens,
+        render: renderTokens,
+        getInputField: () => inputField
+    };
+    
+    window.removeTokenFromInput = function(id, index) {
+        if(window._tokenInputs[id]) {
+            window._tokenInputs[id].tokens.splice(index, 1);
+            window._tokenInputs[id].render();
+        }
+    };
+
+    renderTokens();
+
+    wrapper.addEventListener('click', () => {
+        inputField.focus();
+    });
+
+    inputField.addEventListener('input', () => {
+        const query = inputField.value.trim().toLowerCase();
+        if (query) {
+             const suggestions = getSuggestionsCallback(query);
+             renderDropdown(suggestions);
+        } else {
+             dropdown.classList.add('hidden-force');
+        }
+    });
+
+    function renderDropdown(suggestions) {
+        if (!suggestions || suggestions.length === 0) {
+            dropdown.innerHTML = '<div class="p-2 text-xs text-gray-500 text-center italic pointer-events-none">No matches found</div>';
+        } else {
+            dropdown.innerHTML = '';
+            suggestions.forEach(s => {
+                const item = document.createElement('div');
+                item.className = "px-3 py-2 text-sm font-bold text-gray-800 dark:text-gray-200 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition border-b border-gray-100 dark:border-gray-700 last:border-0";
+                item.textContent = s.label;
+                item.addEventListener('mousedown', (e) => {
+                    e.preventDefault(); // prevent blur
+                    const currentTokens = window._tokenInputs[inputId].tokens;
+                    if (!currentTokens.includes(s.value)) {
+                        currentTokens.push(s.value);
+                    }
+                    inputField.value = '';
+                    dropdown.classList.add('hidden-force');
+                    renderTokens();
+                });
+                dropdown.appendChild(item);
+            });
+        }
+        dropdown.classList.remove('hidden-force');
+    }
+
+    inputField.addEventListener('focus', () => {
+         const suggestions = getSuggestionsCallback(inputField.value.trim().toLowerCase());
+         renderDropdown(suggestions);
+    });
+
+    inputField.addEventListener('blur', () => {
+        setTimeout(() => dropdown.classList.add('hidden-force'), 150);
     });
 };

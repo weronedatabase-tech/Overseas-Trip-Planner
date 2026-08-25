@@ -60,7 +60,7 @@ return SpreadsheetApp.openById(dbId);
 }
 
 function getCacheKey(type) {
-return type + "_" + getDbId();
+return type + "_v2_" + getDbId();
 }
 
 function putLargeCache(cacheKey, jsonStr) {
@@ -83,6 +83,20 @@ cache.putAll(dict, 21600);
 } catch(e) { console.error("Cache Put Error:", e); }
 }
 
+
+function removeLargeCache(cacheKey) {
+  const cache = CacheService.getScriptCache();
+  try {
+    cache.remove(cacheKey);
+    const countStr = cache.get(cacheKey + "_count");
+    if (countStr) {
+      const count = parseInt(countStr);
+      const keys = [cacheKey + "_count"];
+      for (let i = 0; i < count; i++) keys.push(cacheKey + "_" + i);
+      cache.removeAll(keys);
+    }
+  } catch(e) {}
+}
 function getLargeCache(cacheKey) {
 const cache = CacheService.getScriptCache();
 try {
@@ -135,7 +149,7 @@ requiredSheets.forEach(name => {
 if (!ss.getSheetByName(name)) {
 let sheet = ss.insertSheet(name);
 if (name === "Raw Data") {
-  sheet.appendRow(["Timestamp", "Email address", "Trainee / Volunteer / Caregiver", "Full Name (As stated in your Passport)", "Related Trainee's Name", "Relationship with Trainee", "Which project do you belong to?", "Gender", "Contact Number", "Home Address", "Nationality", "FULL NRIC / FIN", "Passport No.", "Passport Expiry Date", "Date of Birth", "Any dietary restrictions?", "Emergency Contact Name", "Emergency Contact Number", "Relationship with Emergency Contact", "Any sleeping arrangement request?", "Other Points to Note", "Family POC NRIC", "Short Name / Nickname", "Medical Conditions and Medications to take note of"]);
+  sheet.appendRow(["Timestamp", "Email address", "Trainee / Volunteer / Caregiver", "Full Name (As stated in your Passport)", "Related Trainees' Name(s)", "Relationship with Trainee(s)", "Which project do you belong to?", "Gender", "Contact Number", "Home Address", "Nationality", "FULL NRIC / FIN", "Passport No.", "Passport Expiry Date", "Date of Birth", "Any dietary restrictions?", "Emergency Contact Name", "Emergency Contact Number", "Relationship with Emergency Contact", "Any sleeping arrangement request?", "Other Points to Note", "Family POC NRIC", "Short Name / Nickname", "Medical Conditions and Medications to take note of"]);
   sheet.setFrozenRows(1);
 } else if (name === "Finance Options") {
   sheet.appendRow(["JSON Data - Do Not Edit"]);
@@ -174,11 +188,14 @@ case 'getProfile': result = getProfile(data.nric); break;
 case 'updateProfile': result = updateProfile(data.member); break;
 case 'submitRegistration': result = submitRegistration(data.payload); break;
 case 'getPublicTrainees': result = getPublicTrainees(); break;
+case 'checkDuplicateParticipant': result = checkDuplicateParticipant(data.nric, data.passport); break;
 case 'toggleRegistration': result = toggleRegistration(data.status, data.tripTitle, data.tripYear, data.tripStart, data.tripEnd); break;
 case 'toggleEdits': result = toggleEdits(data.status); break;
 case 'getCommittee': result = getCommitteeList(); break;
 case 'addCommittee': result = modifyCommitteeList(data.nric, true, data.name, data.phone); break;
 case 'removeCommittee': result = modifyCommitteeList(data.nric, false); break;
+case 'addHelpline': result = modifyHelplineContacts(data.id, true, data.name, data.phone); break;
+case 'removeHelpline': result = modifyHelplineContacts(data.id, false); break;
 case 'addProjectGroup': result = modifyProjectGroups(data.groupName, true, data.callerNric, data.colorClass); break;
 case 'removeProjectGroup': result = modifyProjectGroups(data.groupName, false, data.callerNric); break;
 case 'modifyJunctures': result = modifyJunctures(data.actionType, data.oldName, data.newName); break;
@@ -245,6 +262,7 @@ status: 'success',
 registrationOpen: props.getProperty('REGISTRATION_OPEN') === 'true', 
 allowEdits: props.getProperty('ALLOW_EDITS') === 'true',
 committee: props.getProperty('COMMITTEE_LIST') ? JSON.parse(props.getProperty('COMMITTEE_LIST')) : [], 
+helpline: props.getProperty('HELPLINE_CONTACTS') ? JSON.parse(props.getProperty('HELPLINE_CONTACTS')) : [],
 projectGroups: props.getProperty('PROJECT_GROUPS') ? JSON.parse(props.getProperty('PROJECT_GROUPS')) : [], 
 projectColors: props.getProperty('PROJECT_COLORS') ? JSON.parse(props.getProperty('PROJECT_COLORS')) : {}, 
 activeProjects: activeProjects, 
@@ -339,27 +357,12 @@ const currentUserRecord = data.find(r => r.nric === nric);
 if (!currentUserRecord) return {status: 'error', message: 'Profile not found.'};
 
 let family = [];
-const userRole = currentUserRecord.role;
-const userName = currentUserRecord.fullName.toLowerCase();
-const userRelatedTrainee = (currentUserRecord.relatedTrainee || '').toLowerCase();
-
-let targetTraineeName = null;
-if (userRole === 'TRAINEE') targetTraineeName = userName;
-else if (userRole === 'CAREGIVER' && userRelatedTrainee) targetTraineeName = userRelatedTrainee;
+const targetPoc = currentUserRecord.pocNric || currentUserRecord.nric;
 
 data.forEach(row => {
- let isFamilyMember = false;
- const rowRole = row.role;
- const rowName = row.fullName.toLowerCase();
- const rowRelated = (row.relatedTrainee || '').toLowerCase();
+ const rowPoc = row.pocNric || row.nric;
 
- if (targetTraineeName) {
-     if (rowRole === 'TRAINEE' && rowName === targetTraineeName) isFamilyMember = true;
-     if (rowRole === 'CAREGIVER' && rowRelated === targetTraineeName) isFamilyMember = true;
- }
- if (row.nric === nric) isFamilyMember = true;
-
- if (isFamilyMember) {
+ if (rowPoc === targetPoc) {
      let expRaw = row.passportExpiry;
      let dobRaw = row.dob;
      
@@ -430,9 +433,33 @@ if (String(data[i][11]).trim().toUpperCase() === String(member.nric || '').trim(
 
   sheet.getRange(i+1, 1, 1, rData.length).setValues([rData]);
   
+  
   // Write-Through: Invalidate dependent caches
-  CacheService.getScriptCache().remove(getCacheKey('ROSTER'));
-  CacheService.getScriptCache().remove(getCacheKey('LOGISTICS'));
+  if (member.role === 'CAREGIVER') {
+      const desiredNames = (member.relatedTrainee || '').split('|').map(n => n.trim().toLowerCase()).filter(n => n);
+      const targetPoc = String(rData[21] || rData[11] || '').trim().toUpperCase();
+      
+      for (let j = 1; j < data.length; j++) {
+          if (String(data[j][2]).trim().toUpperCase() === 'TRAINEE') {
+              const jNric = String(data[j][11]).trim().toUpperCase();
+              const jPoc = String(data[j][21] || data[j][11] || '').trim().toUpperCase();
+              const jName = String(data[j][3] || '').replace(/\s+/g, '').toLowerCase();
+              const jShort = String(data[j][22] || '').replace(/\s+/g, '').toLowerCase();
+              
+              const isDesired = desiredNames.some(d => d.includes(jName) || jName.includes(d) || (jShort && d.includes(jShort)));
+              
+              if (isDesired && jPoc !== targetPoc) {
+                  data[j][21] = targetPoc;
+                  sheet.getRange(j+1, 22).setValue(targetPoc);
+              } else if (!isDesired && jPoc === targetPoc) {
+                  data[j][21] = jNric;
+                  sheet.getRange(j+1, 22).setValue(jNric);
+              }
+          }
+      }
+  }
+  removeLargeCache(getCacheKey('ROSTER'));
+  removeLargeCache(getCacheKey('LOGISTICS'));
   precomputeAppCache(); 
   return { status: 'success' };
 }
@@ -460,8 +487,10 @@ lock.waitLock(15000);
 
 const data = sheet.getDataRange().getValues();
 const existingNrics = new Set();
+const existingPassports = new Set();
 for (let i = 1; i < data.length; i++) {
   if (data[i][11]) existingNrics.add(String(data[i][11]).trim().toUpperCase());
+  if (data[i][12]) existingPassports.add(String(data[i][12]).trim().toUpperCase());
 }
 
 const pocNric = payloadArray[0].nric.toUpperCase();
@@ -469,8 +498,14 @@ const newRows = [];
 
 for (let p of payloadArray) {
   const pNric = String(p.nric).trim().toUpperCase();
-  if (existingNrics.has(pNric)) continue;
-  existingNrics.add(pNric);
+  const pPassport = String(p.passportNo || '').trim().toUpperCase();
+  if (existingNrics.has(pNric)) {
+    return { status: 'error', message: `NRIC/FIN ${pNric} already exists. If you have already registered, login to make changes.` };
+  }
+  if (pPassport && existingPassports.has(pPassport)) {
+    return { status: 'error', message: `Passport ${pPassport} already exists. If you have already registered, login to make changes.` };
+  }
+  existingNrics.add(pNric); if(pPassport) existingPassports.add(pPassport);
   newRows.push([
     new Date(), p.email||'', p.role||'', p.fullName||'', p.relatedTrainee||'', p.relationship||'', p.group||'', p.gender||'', p.contact||'', p.address||'', p.nationality||'',
     pNric, p.passportNo||'', p.passportExpiry ? "'" + p.passportExpiry : '', p.dob ? "'" + p.dob : '', p.diet||'',
@@ -478,10 +513,36 @@ for (let p of payloadArray) {
   ]);
 }
 
+
 if (newRows.length > 0) {
   sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
-  CacheService.getScriptCache().remove(getCacheKey('ROSTER'));
-  CacheService.getScriptCache().remove(getCacheKey('LOGISTICS'));
+  
+  // Sync logic for Caregivers linking existing trainees during registration
+  const data = sheet.getDataRange().getValues();
+  for (let p of payloadArray) {
+      if (p.role === 'CAREGIVER' && p.relatedTrainee) {
+          const desiredNames = p.relatedTrainee.split('|').map(n => n.trim().toLowerCase()).filter(n => n);
+          const targetPoc = pocNric; // pocNric was defined above
+          
+          for (let j = 1; j < data.length; j++) {
+              if (String(data[j][2]).trim().toUpperCase() === 'TRAINEE') {
+                  const jNric = String(data[j][11]).trim().toUpperCase();
+                  const jPoc = String(data[j][21] || data[j][11] || '').trim().toUpperCase();
+                  const jName = String(data[j][3] || '').replace(/\s+/g, '').toLowerCase();
+                  const jShort = String(data[j][22] || '').replace(/\s+/g, '').toLowerCase();
+                  
+                  const isDesired = desiredNames.some(d => d.includes(jName) || jName.includes(d) || (jShort && d.includes(jShort)));
+                  
+                  if (isDesired && jPoc !== targetPoc) {
+                      sheet.getRange(j+1, 22).setValue(targetPoc);
+                  }
+              }
+          }
+      }
+  }
+
+  removeLargeCache(getCacheKey('ROSTER'));
+  removeLargeCache(getCacheKey('LOGISTICS'));
 }
 
 return { status: 'success' };
@@ -526,7 +587,7 @@ results.push({
   emergencyRelation: String(data[i][18]||'').trim(),
   sleeping: String(data[i][19]||'').trim(), 
   otherPoints: String(data[i][20]||'').trim(), 
-  pocNric: String(data[i][21]||'').trim().toUpperCase(), 
+  pocNric: String(data[i][21]||data[i][11]||'').trim().toUpperCase(), 
   shortName: String(data[i][22]||'').trim().toUpperCase(),
   medical: String(data[i][23]||'').trim(),
   bus: String(data[i][24]||'').trim(),
@@ -534,7 +595,38 @@ results.push({
 });
 }
 }
-const res = { status: 'success', roster: results };
+
+  // In-memory self-healing of pocNric based on 'relatedTrainee' column (index 4)
+  results.forEach(r => {
+      if (r.role === 'CAREGIVER' && r.relatedTrainee) {
+          const desiredNames = r.relatedTrainee.split(/[\|,]/).map(n => n.replace(/\s+/g, '').toLowerCase()).filter(n => n);
+          
+          results.forEach(j => {
+              if (j !== r) {
+                  const jName = (j.fullName || '').replace(/\s+/g, '').toLowerCase();
+                  const jShort = (j.shortName || '').replace(/\s+/g, '').toLowerCase();
+                  const isDesired = desiredNames.some(d => d.includes(jName) || jName.includes(d) || (jShort && d.includes(jShort)));
+                  
+                  if (isDesired) {
+                      j.pocNric = r.nric; // Override trainee's pocNric in memory
+                      r.pocNric = r.nric; // Ensure caregiver's pocNric is their own NRIC
+                  }
+              }
+          });
+      }
+  });
+
+  results.forEach(r => {
+      if (r.role === 'CAREGIVER') {
+          const dependents = results.filter(x => x !== r && x.pocNric === r.pocNric);
+          if (dependents.length > 0) {
+              r.relatedTrainee = dependents.map(d => `${d.fullName}${d.shortName ? ' (' + d.shortName + ')' : ''}`).join(' | ');
+          }
+      }
+  });
+
+
+  const res = { status: 'success', roster: results };
 putLargeCache(cacheKey, JSON.stringify(res));
 return res;
 }
@@ -542,6 +634,7 @@ return res;
 // ==========================================
 // LOGISTICS & SYNC ENGINE
 // ==========================================
+
 function fetchLogistics(forceRebuild = false) {
 const cacheKey = getCacheKey('LOGISTICS');
 if(!forceRebuild) {
@@ -549,28 +642,24 @@ const cached = getLargeCache(cacheKey);
 if(cached) return JSON.parse(cached);
 }
 
-const ss = getDatabase(); 
-const pData = ss.getSheetByName("Raw Data").getDataRange().getValues(); 
-const participants = [];
-for(let i=1; i<pData.length; i++) {
-if(pData[i][11]) {
-participants.push({ 
-  role: String(pData[i][2]).trim().toUpperCase(), 
-  name: String(pData[i][3]).trim().toUpperCase(), 
-  relatedTrainee: pData[i][4] ? String(pData[i][4]).trim().toUpperCase() : '',
-  shortName: pData[i][22] ? String(pData[i][22]).trim().toUpperCase() : '',
-  group: String(pData[i][6]).trim(), 
-  gender: String(pData[i][7]).trim(),
-  nric: String(pData[i][11]).trim().toUpperCase(),
-  pocNric: String(pData[i][21]).trim().toUpperCase(),
-  bus: String(pData[i][24]||'').trim(),
-  logisticsGroup: String(pData[i][25]||'').trim(),
-  sleeping: pData[i][19] ? String(pData[i][19]).trim() : ''
-});
-}
-}
+// Reuse the fully healed roster
+const rosterData = fetchAdminRoster(forceRebuild).roster;
+const participants = rosterData.map(p => ({
+  role: p.role,
+  name: p.fullName,
+  relatedTrainee: p.relatedTrainee,
+  shortName: p.shortName,
+  group: p.group,
+  gender: p.gender,
+  nric: p.nric,
+  pocNric: p.pocNric,
+  bus: p.bus,
+  logisticsGroup: p.logisticsGroup,
+  sleeping: p.sleeping
+}));
 
 const pairRes = fetchPairingsOnly(forceRebuild);
+
 const roomRes = fetchRoomsOnly(forceRebuild);
 
 const res = { status: 'success', participants, pairings: pairRes.pairings, rooms: roomRes.rooms, groups: [], buses:[] };
@@ -990,18 +1079,19 @@ if (!sheet) {
 }
 
 const tripFolder = getTripFolder();
-let receiptsFolder;
-const folders = tripFolder.getFoldersByName("Receipts");
-if (folders.hasNext()) receiptsFolder = folders.next();
+const folderName = payload.categoryId === "Fees Payment Screenshot" ? "Trip Fees Payment Confirmation" : "Receipts";
+let targetFolder;
+const folders = tripFolder.getFoldersByName(folderName);
+if (folders.hasNext()) targetFolder = folders.next();
 else {
-  try { receiptsFolder = tripFolder.createFolder("Receipts"); }
-  catch(e) { receiptsFolder = tripFolder.getFoldersByName("Receipts").next(); }
+  try { targetFolder = tripFolder.createFolder(folderName); }
+  catch(e) { targetFolder = tripFolder.getFoldersByName(folderName).next(); }
 }
 
 let fileUrl = "";
 if (payload.fileData) {
 const blob = Utilities.newBlob(Utilities.base64Decode(payload.fileData), payload.mimeType, payload.fileName);
-const file = receiptsFolder.createFile(blob);
+const file = targetFolder.createFile(blob);
 fileUrl = file.getUrl();
 }
 
@@ -1189,6 +1279,16 @@ function toggleEdits(status) { PropertiesService.getScriptProperties().setProper
 
 function getCommitteeList() { return { status: 'success', list: JSON.parse(PropertiesService.getScriptProperties().getProperty('COMMITTEE_LIST') || '[]') }; }
 
+function getHelplineContacts() { return { status: 'success', list: JSON.parse(PropertiesService.getScriptProperties().getProperty('HELPLINE_CONTACTS') || '[]') }; }
+
+function modifyHelplineContacts(id, isAdding, name = "", phone = "") {
+const props = PropertiesService.getScriptProperties(); id = String(id || '').trim();
+let list = JSON.parse(props.getProperty('HELPLINE_CONTACTS') || '[]');
+if (isAdding) { if (!list.find(c => c.id === id)) list.push({ id, name: String(name || '').trim().toUpperCase(), phone: String(phone || '').trim() }); }
+else { list = list.filter(c => c.id !== id); }
+props.setProperty('HELPLINE_CONTACTS', JSON.stringify(list)); return getHelplineContacts();
+}
+
 function modifyCommitteeList(nric, isAdding, name = "", phone = "") {
 const props = PropertiesService.getScriptProperties(); nric = String(nric || '').trim().toUpperCase();
 let list = JSON.parse(props.getProperty('COMMITTEE_LIST') || '[]');
@@ -1321,7 +1421,7 @@ function deleteParticipant(nric) {
     archiveSheet.appendRow(rowData);
     sheet.deleteRow(rowIndex);
     
-    CacheService.getScriptCache().remove(getCacheKey('ROSTER'));
+    removeLargeCache(getCacheKey('ROSTER'));
     return { status: 'success' };
   } catch(e) {
     return { status: 'error', message: e.message };
@@ -1373,12 +1473,75 @@ if (dataChanged) {
   }
   sheet.getRange(1, 1, data.length, targetLength).setValues(data);
   SpreadsheetApp.flush();
-  CacheService.getScriptCache().remove(getCacheKey('ROSTER'));
-  CacheService.getScriptCache().remove(getCacheKey('LOGISTICS'));
+  removeLargeCache(getCacheKey('ROSTER'));
+  removeLargeCache(getCacheKey('LOGISTICS'));
   precomputeAppCache();
 }
 return { status: 'success' };
 
 } catch(e) { return { status: 'error', message: e.message }; }
 finally { lock.releaseLock(); }
+}
+
+function checkDuplicateParticipant(nric, passport) {
+  const sheet = getDatabase().getSheetByName("Raw Data");
+  const data = sheet.getDataRange().getValues();
+  const existingNrics = new Set();
+  const existingPassports = new Set();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][11]) existingNrics.add(String(data[i][11]).trim().toUpperCase());
+    if (data[i][12]) existingPassports.add(String(data[i][12]).trim().toUpperCase());
+  }
+  
+  let conflictType = null;
+  if (nric && existingNrics.has(String(nric).trim().toUpperCase())) {
+    conflictType = 'NRIC';
+  } else if (passport && existingPassports.has(String(passport).trim().toUpperCase())) {
+    conflictType = 'Passport';
+  }
+  
+  if (conflictType) {
+    return { status: 'error', conflictType: conflictType, message: `This ${conflictType} already exists.` };
+  }
+  return { status: 'success' };
+}
+
+
+function forceMigratePocNric() {
+  const ss = getDatabase();
+  const sheet = ss.getSheetByName("Raw Data");
+  const data = sheet.getDataRange().getValues();
+  
+  // 1. Identify all caregivers and their related trainees
+  let changes = 0;
+  for (let i = 1; i < data.length; i++) {
+      if (String(data[i][2]).trim().toUpperCase() === 'CAREGIVER') {
+          const cgNric = String(data[i][11]).trim().toUpperCase();
+          const relatedStr = String(data[i][4] || '').trim(); // column E has the names
+          
+          if (relatedStr) {
+              const desiredNames = relatedStr.split(/[\|,]/).map(n => n.trim().toLowerCase()).filter(n => n);
+              
+              for (let j = 1; j < data.length; j++) {
+                  if (String(data[j][2]).trim().toUpperCase() === 'TRAINEE') {
+                      const jNric = String(data[j][11]).trim().toUpperCase();
+                      const jPoc = String(data[j][21] || '').trim().toUpperCase(); // Column V
+                      const jName = String(data[j][3] || '').replace(/\s+/g, '').toLowerCase();
+                      const jShort = String(data[j][22] || '').replace(/\s+/g, '').toLowerCase();
+                      
+                      const isDesired = desiredNames.some(d => d.includes(jName) || jName.includes(d) || (jShort && d.includes(jShort)));
+                      
+                      if (isDesired && jPoc !== cgNric) {
+                          sheet.getRange(j+1, 22).setValue(cgNric); // set Trainee's pocNric to Caregiver's NRIC
+                          sheet.getRange(i+1, 22).setValue(cgNric); // set Caregiver's pocNric to Caregiver's NRIC
+                          changes++;
+                      }
+                  }
+              }
+          }
+      }
+  }
+  removeLargeCache(getCacheKey('ROSTER'));
+  removeLargeCache(getCacheKey('LOGISTICS'));
+  return changes;
 }

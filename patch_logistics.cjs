@@ -1,22 +1,35 @@
 const fs = require('fs');
-let content = fs.readFileSync('frontend/js/logistics.js', 'utf8');
+const path = './frontend/js/logistics.js';
+let content = fs.readFileSync(path, 'utf8');
 
-// For rooms
+// Replace in getRoomState
 content = content.replace(
-    /document\.getElementById\('unassignedCount'\)\.innerText = filteredUnassigned\.length;\s*let unHtml = '';/,
-    "document.getElementById('unassignedCount').innerText = filteredUnassigned.length;\nif (window.sortParticipantsSpecial) window.sortParticipantsSpecial(filteredUnassigned, globalLogistics.participants);\nlet unHtml = '';"
+    /let targetPoc = window\.resolvePocNric \? window\.resolvePocNric\(p, globalLogistics\.participants\) : \(p\.pocNric \|\| p\.nric\);[\s\S]*?const familyMembers = globalLogistics\.participants\.filter\(x => \{[\s\S]*?let xTarget = window\.resolvePocNric \? window\.resolvePocNric\(x, globalLogistics\.participants\) : \(x\.pocNric \|\| x\.nric\);[\s\S]*?return xTarget === targetPoc;[\s\S]*?\}\);[\s\S]*?if \(familyMembers\.some\(x => x\.role === 'CAREGIVER'\)\) hasFamily = true;/g,
+    "if (window.isFamily(p.nric, globalLogistics.participants)) hasFamily = true;"
 );
 
-// For groups
+// Replace clustering in unassigned.forEach
 content = content.replace(
-    /document\.getElementById\('groupUnassignedCount'\)\.innerText = unassigned\.length;\s*let unHtml = '';/,
-    "document.getElementById('groupUnassignedCount').innerText = unassigned.length;\nif (window.sortParticipantsSpecial) window.sortParticipantsSpecial(unassigned, globalLogistics.participants);\nlet unHtml = '';"
+    /let targetPoc = window\.resolvePocNric \? window\.resolvePocNric\(p, globalLogistics\.participants\) : \(p\.pocNric \|\| p\.nric\);/g,
+    "let targetPoc = p.pocNric;"
 );
 
-// For buses
+// Replace in getConnectedParticipants
 content = content.replace(
-    /document\.getElementById\('busUnassignedCount'\)\.innerText = unassigned\.length;\s*let unHtml = '';/g,
-    "document.getElementById('busUnassignedCount').innerText = unassigned.length;\nif (window.sortParticipantsSpecial) window.sortParticipantsSpecial(unassigned, globalLogistics.participants);\nlet unHtml = '';"
+    /let pTarget = window\.resolvePocNric \? window\.resolvePocNric\(p, globalLogistics\.participants\) : \(p\.pocNric \|\| p\.nric\);[\s\S]*?globalLogistics\.participants\.forEach\(x => \{[\s\S]*?let xTarget = window\.resolvePocNric \? window\.resolvePocNric\(x, globalLogistics\.participants\) : \(x\.pocNric \|\| x\.nric\);[\s\S]*?if \(xTarget === pTarget && !connected\.has\(x\.nric\)\) \{[\s\S]*?connected\.add\(x\.nric\);[\s\S]*?queue\.push\(x\.nric\);[\s\S]*?\}[\s\S]*?\}\);/g,
+    `let pTarget = p.pocNric;
+        globalLogistics.participants.forEach(x => {
+            if (x.pocNric === pTarget && !connected.has(x.nric)) {
+                connected.add(x.nric);
+                queue.push(x.nric);
+            }
+        });`
 );
 
-fs.writeFileSync('frontend/js/logistics.js', content, 'utf8');
+// Replace the family grouping logic:
+content = content.replace(
+    /if\(group\.some\(p => p\.role === 'CAREGIVER'\) \|\| group\.length > 1\) \{/g,
+    "if(group.length > 1) {"
+);
+
+fs.writeFileSync(path, content);

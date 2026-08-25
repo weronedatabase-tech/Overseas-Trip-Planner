@@ -1,12 +1,25 @@
 const fs = require('fs');
-let code = fs.readFileSync('frontend/js/participants.js', 'utf8');
+const path = './frontend/js/participants.js';
+let content = fs.readFileSync(path, 'utf8');
 
-// Replace 250px default width for fullName with a calculation or CSS min/max
-code = code.replace(/style="width: 250px; min-width: 250px; max-width: 250px;"/g, 
-    'style="width: min(250px, 33vw); min-width: min(250px, 33vw); max-width: 33vw;"');
+content = content.replace(
+    /const poc = window\.resolvePocNric \? window\.resolvePocNric\(x, adminRosterData\) : \(x\.pocNric \|\| x\.nric\);/g,
+    "const poc = x.pocNric;"
+);
 
-code = code.replace(/const colDef = colId === 'fullName' \? \{width: 250\} : rosterCols.find\(c => c.id === colId\);/g,
-    'const colDef = colId === \'fullName\' ? {width: Math.min(250, window.innerWidth / 3)} : rosterCols.find(c => c.id === colId);');
+content = content.replace(
+    /const poc = window\.resolvePocNric \? window\.resolvePocNric\(p, adminRosterData\) : \(p\.pocNric \|\| p\.nric\);/g,
+    "const poc = p.pocNric;"
+);
 
-fs.writeFileSync('frontend/js/participants.js', code);
-console.log("Patched participants.js");
+content = content.replace(
+    /if\(x\.role === 'CAREGIVER'\) famMap\[poc\]\.hasCaregiver = true;/g,
+    ""
+);
+
+content = content.replace(
+    /const isFamily = info \? \(info\.count > 1 \|\| info\.hasCaregiver\) : false;/g,
+    "const isFamily = info ? info.count > 1 : false;"
+);
+
+fs.writeFileSync(path, content);

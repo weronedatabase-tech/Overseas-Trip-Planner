@@ -1,12 +1,8 @@
 const fs = require('fs');
-let code = fs.readFileSync('frontend/js/profile.js', 'utf8');
-code = code.replace(
-    /const \[profRes, finRes, recRes, logRes\] = await Promise.all\(\[\s*apiCall\('getProfile', { nric: currentUser.nric }\),\s*apiCall\('fetchFinance'\),\s*apiCall\('fetchReceipts'\),\s*apiCall\('fetchLogistics'\)\s*\]\);/,
-    `const [profRes, finRes, recRes, logRes] = await Promise.all([
-        apiCall('getProfile', { nric: currentUser.nric }).catch(e => { console.warn("Failed to load profile:", e); return { family: [] }; }),
-        apiCall('fetchFinance').catch(e => { console.warn("Failed to load finance:", e); return { data: { config: {}, options: [] }, rates: { "SGD": 1 } }; }),
-        apiCall('fetchReceipts').catch(e => { console.warn("Failed to load receipts:", e); return { receipts: [] }; }),
-        apiCall('fetchLogistics').catch(e => { console.warn("Failed to load logistics:", e); return null; })
-    ]);`
-);
-fs.writeFileSync('frontend/js/profile.js', code);
+const path = './frontend/js/profile.js';
+let content = fs.readFileSync(path, 'utf8');
+
+content = content.replace(/if \(!hasCaregiver\) targetNric = loadedFamily\[0\]\.nric;\n/g, "");
+content = content.replace(/if \(!loadedFamily\.some\(m => m\.role === 'CAREGIVER'\)\) targetNric = loadedFamily\[0\]\.nric;\n/g, "");
+
+fs.writeFileSync(path, content);

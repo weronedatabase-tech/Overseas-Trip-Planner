@@ -33,15 +33,22 @@ function getFirstTraineeName() {
 }
 
 function syncTraineeName() {
-   const traineeName = getFirstTraineeName();
-   lastAddedTraineeName = traineeName; 
    const allBlocks = Array.from(document.getElementsByClassName('member-block'));
-   for (let b of allBlocks) {
+   for (let i = 0; i < allBlocks.length; i++) {
+       const b = allBlocks[i];
        const role = b.querySelector('.reg-f-role').value;
        if (role === 'CAREGIVER') {
            const relatedInput = b.querySelector('.reg-f-related');
            if (relatedInput && relatedInput.dataset.manual !== 'true') {
-               relatedInput.value = traineeName;
+               const traineesBefore = [];
+               for (let j = 0; j < i; j++) {
+                   const prevB = allBlocks[j];
+                   if (prevB.querySelector('.reg-f-role').value === 'TRAINEE') {
+                       const tName = prevB.querySelector('.reg-f-name').value.trim();
+                       if (tName) traineesBefore.push(tName);
+                   }
+               }
+               relatedInput.value = traineesBefore.join(' | ');
            }
        }
    }
@@ -68,7 +75,7 @@ const personalInfoHtml = `
  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
    <div class="md:col-span-2">
        <label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Role <span class="text-red-500">*</span></label>
-       <select required class="reg-f-role w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary" onchange="toggleTraineeFields(this, ${idx}); syncTraineeName();">
+       <select required class="reg-f-role w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary" onchange="syncTraineeName(); toggleTraineeFields(this, ${idx});">
            <option value="" disabled selected>Select Role...</option>
            <option value="TRAINEE">Trainee</option>
            <option value="CAREGIVER">Caregiver</option>
@@ -90,11 +97,10 @@ const caregiverHtml = `
  <div class="trainee-div hidden-force bg-green-50/50 dark:bg-gray-800 p-4 rounded-xl mb-4 border border-green-100 dark:border-gray-700">
    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
      <div class="relative">
-         <label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Related Trainee's Name <span class="text-red-500">*</span></label>
-         <input required disabled type="text" id="reg-f-related-${idx}" onclick="showTraineeDropdown(${idx})" onfocus="showTraineeDropdown(${idx})" oninput="filterTraineeDropdown(${idx}); this.dataset.manual='true';" onblur="hideTraineeDropdown(${idx})" class="reg-f-related w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary" autocomplete="off">
-         <ul id="trainee-dropdown-${idx}" class="absolute z-50 w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-2xl mt-1 max-h-48 overflow-y-auto hidden-force custom-scrollbar"></ul>
+         <label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Related Trainees' Name(s) <span class="text-red-500">*</span></label>
+         <input required disabled type="text" id="reg-f-related-${idx}" class="reg-f-related w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary" autocomplete="off" placeholder="Comma-separated for multiple">
      </div>
-     <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Relationship to Trainee <span class="text-red-500">*</span></label><input required disabled type="text" class="reg-f-relation w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. Father, Sibling"></div>
+     <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Relationship to Trainee(s) <span class="text-red-500">*</span></label><input required disabled type="text" class="reg-f-relation w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. Father, Sibling"></div>
    </div>
  </div>
 `;
@@ -102,9 +108,9 @@ const caregiverHtml = `
 const identityHtml = `
  <h4 class="font-bold text-lg mb-3 border-b border-gray-200 dark:border-gray-700 pb-1 text-primary dark:text-green-400">Identification</h4>
  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-   <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Full NRIC / FIN <span class="text-red-500">*</span></label><input required type="text" class="reg-f-nric w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg uppercase bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
+   <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Full NRIC / FIN <span class="text-red-500">*</span></label><div class="dup-warn hidden-force text-xs text-red-500 font-bold mb-1"></div><input required type="text" onblur="checkDuplicateField(this, 'nric')" class="reg-f-nric w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg uppercase bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
    <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Nationality <span class="text-red-500">*</span></label><input required type="text" class="reg-f-nat w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
-   <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Passport No. <span class="text-red-500">*</span></label><input required type="text" class="reg-f-pass w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg uppercase bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
+   <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Passport No. <span class="text-red-500">*</span></label><div class="dup-warn hidden-force text-xs text-red-500 font-bold mb-1"></div><input required type="text" onblur="checkDuplicateField(this, 'passport')" class="reg-f-pass w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg uppercase bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
    <div><label class="block text-xs font-semibold mb-1 text-gray-500 dark:text-gray-400">Passport Expiry <span class="text-red-500">*</span></label><input required type="text" id="exp_${idx}" readonly placeholder="DD Mmm YYYY" onclick="openDatePicker('exp_${idx}', 'exp')" class="reg-f-exp w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg font-medium text-center cursor-pointer bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"></div>
  </div>
 `;
@@ -152,6 +158,42 @@ const finalHtml = `
 `;
 
 document.getElementById('membersContainer').insertAdjacentHTML('beforeend', finalHtml);
+
+  // Apply token input
+  setTimeout(() => {
+      if (typeof setupTokenInput === 'function') {
+          setupTokenInput(`reg-f-related-${idx}`, function(query) {
+              let localTrainees = [];
+              const allBlocks = Array.from(document.getElementsByClassName('member-block'));
+              for (let b of allBlocks) {
+                 const role = b.querySelector('.reg-f-role').value;
+                 if (role === 'TRAINEE') {
+                     const tName = b.querySelector('.reg-f-name').value.trim();
+                     const tShort = b.querySelector('.reg-f-shortname').value.trim();
+                     if (tName) {
+                         localTrainees.push({name: tName, shortName: tShort});
+                     }
+                 }
+              }
+              let allTrainees = [...publicTrainees, ...localTrainees];
+              const seen = new Set();
+              allTrainees = allTrainees.filter(t => {
+                 const k = t.name.toLowerCase();
+                 if(seen.has(k)) return false;
+                 seen.add(k);
+                 return true;
+              });
+              let matches = allTrainees;
+              if (query) {
+                matches = allTrainees.filter(t => 
+                     t.name.toLowerCase().includes(query) || 
+                     (t.shortName && t.shortName.toLowerCase().includes(query))
+                );
+              }
+              return matches.map(t => ({ label: `${t.name} ${t.shortName ? '(' + t.shortName + ')' : ''}`, value: t.name }));
+          });
+      }
+  }, 50);
 }
 
 function toggleTraineeFields(selectEl, idx) {
@@ -203,10 +245,47 @@ const popupName = document.getElementById('cgPopupTraineeName');
 const popupRel = document.getElementById('cgPopupRelation');
 
 popupName.value = defaultName;
-popupName.dataset.manual = defaultName ? 'false' : 'true';
+popupName.dataset.manual = inlineName ? document.getElementById(`reg-f-related-${idx}`).dataset.manual : 'false';
 popupRel.value = inlineRel || '';
 
-document.getElementById('cgPopupTraineeDropdown').classList.add('hidden-force');
+if (typeof setupTokenInput === 'function') {
+    setupTokenInput('cgPopupTraineeName', function(query) {
+        let localTrainees = [];
+        const allBlocks = Array.from(document.getElementsByClassName('member-block'));
+        for (let b of allBlocks) {
+            const role = b.querySelector('.reg-f-role').value;
+            if (role === 'TRAINEE') {
+                const tName = b.querySelector('.reg-f-name').value.trim();
+                const tShort = b.querySelector('.reg-f-shortname').value.trim();
+                if (tName) {
+                    localTrainees.push({name: tName, shortName: tShort});
+                }
+            }
+        }
+        let allTrainees = [...publicTrainees, ...localTrainees];
+        const seen = new Set();
+        allTrainees = allTrainees.filter(t => {
+            const k = t.name.toLowerCase();
+            if(seen.has(k)) return false;
+            seen.add(k);
+            return true;
+        });
+        let matches = allTrainees;
+        if (query) {
+            matches = allTrainees.filter(t => 
+                t.name.toLowerCase().includes(query) || 
+                (t.shortName && t.shortName.toLowerCase().includes(query))
+            );
+        }
+        return matches.map(t => ({ label: `${t.name} ${t.shortName ? '(' + t.shortName + ')' : ''}`, value: t.name }));
+    });
+}
+
+if (window._tokenInputs && window._tokenInputs['cgPopupTraineeName']) {
+    window._tokenInputs['cgPopupTraineeName'].tokens = defaultName.split(/[\|,]/).map(s => s.trim()).filter(Boolean);
+    window._tokenInputs['cgPopupTraineeName'].render();
+}
+
 document.getElementById('caregiverPopupModal').classList.remove('hidden-force');
 }
 
@@ -228,16 +307,17 @@ closeCaregiverPopup();
 }
 
 function confirmCaregiverPopup() {
+const cgInput = window._tokenInputs && window._tokenInputs['cgPopupTraineeName'] ? window._tokenInputs['cgPopupTraineeName'].getInputField() : null;
+if (cgInput && cgInput.value.trim().length > 0) {
+   alert("Incorrect Names");
+   return;
+}
+
 const nameVal = document.getElementById('cgPopupTraineeName').value.trim();
 const relVal = document.getElementById('cgPopupRelation').value.trim();
 
 if (!nameVal || !relVal) {
    alert("Please fill in both fields.");
-   return;
-}
-
-if (!isValidTraineeName(nameVal)) {
-   alert("Pls add/register the Trainee first before adding yourself as the Caregiver. You can add the Trainee as Person 1, and add yourself as Person 2.");
    return;
 }
 
@@ -249,6 +329,10 @@ if (currentCaregiverIdx !== null) {
    if (inlineName) {
        inlineName.value = nameVal;
        inlineName.dataset.manual = 'true';
+       if (window._tokenInputs && window._tokenInputs[`reg-f-related-${currentCaregiverIdx}`]) {
+           window._tokenInputs[`reg-f-related-${currentCaregiverIdx}`].tokens = nameVal.split(/[\|,]/).map(s => s.trim()).filter(Boolean);
+           window._tokenInputs[`reg-f-related-${currentCaregiverIdx}`].render();
+       }
    }
    if (inlineRel) inlineRel.value = relVal;
 }
@@ -276,88 +360,6 @@ for (let b of allBlocks) {
 return inPublic || inForm;
 }
 
-function validateCgPopupTrainee() {
-setTimeout(() => {
-   const dd = document.getElementById('cgPopupTraineeDropdown');
-   if(dd) dd.classList.add('hidden-force');
-
-   const input = document.getElementById('cgPopupTraineeName');
-   if(input && input.value.trim() !== '') {
-       const val = input.value.trim();
-       if (!isValidTraineeName(val)) {
-           alert("Pls add/register the Trainee first before adding yourself as the Caregiver. You can add the Trainee as Person 1, and add yourself as Person 2.");
-           input.value = '';
-           input.dataset.manual = 'false';
-       }
-   }
-}, 250);
-}
-
-function filterCgPopupDropdown() {
-const input = document.getElementById('cgPopupTraineeName');
-const dd = document.getElementById('cgPopupTraineeDropdown');
-if(!input || !dd) return;
-
-const query = input.value.toLowerCase().trim();
-
-let localTrainees = [];
-const allBlocks = Array.from(document.getElementsByClassName('member-block'));
-for (let b of allBlocks) {
-   const role = b.querySelector('.reg-f-role').value;
-   if (role === 'TRAINEE') {
-       const tName = b.querySelector('.reg-f-name').value.trim();
-       const tShort = b.querySelector('.reg-f-shortname').value.trim();
-       if (tName) {
-           localTrainees.push({name: tName, shortName: tShort});
-       }
-   }
-}
-
-let allTrainees = [...publicTrainees, ...localTrainees];
-const seen = new Set();
-allTrainees = allTrainees.filter(t => {
-   const k = t.name.toLowerCase();
-   if(seen.has(k)) return false;
-   seen.add(k);
-   return true;
-});
-
-let matches = allTrainees;
-
-if (query) {
-   matches = allTrainees.filter(t => 
-       t.name.toLowerCase().includes(query) || 
-       (t.shortName && t.shortName.toLowerCase().includes(query))
-   );
-}
-
-let html = '';
-matches.forEach(t => {
-   html += `<li class="px-3 py-2 text-sm font-bold text-gray-800 dark:text-gray-200 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition border-b border-gray-100 dark:border-gray-700 last:border-0" onmousedown="selectCgPopupTrainee('${t.name.replace(/'/g, "\\'")}')">${t.name} ${t.shortName ? `(${t.shortName})` : ''}</li>`;
-});
-
-if(html === '') {
-   if (query === '') {
-       html = `<li class="px-3 py-2 text-sm text-gray-500 italic text-center pointer-events-none">No trainees available. Please add a Trainee first.</li>`;
-   } else {
-       html = `<li class="px-3 py-2 text-sm text-gray-500 italic text-center pointer-events-none">No matches found</li>`;
-   }
-}
-
-dd.innerHTML = html;
-dd.classList.remove('hidden-force');
-}
-
-function selectCgPopupTrainee(name) {
-const input = document.getElementById('cgPopupTraineeName');
-if(input) {
-   input.value = name;
-   input.dataset.manual = 'true';
-   const dd = document.getElementById('cgPopupTraineeDropdown');
-   if(dd) dd.classList.add('hidden-force');
-}
-}
-
 
 function showTraineeDropdown(idx) {
 filterTraineeDropdown(idx);
@@ -365,18 +367,10 @@ filterTraineeDropdown(idx);
 
 function hideTraineeDropdown(idx) {
 setTimeout(() => {
+  const input = document.getElementById(`reg-f-related-${idx}`);
+  if(input && document.activeElement === input) return;
   const dd = document.getElementById(`trainee-dropdown-${idx}`);
   if(dd) dd.classList.add('hidden-force');
-
-  const input = document.getElementById(`reg-f-related-${idx}`);
-  if(input && input.value.trim() !== '') {
-      const val = input.value.trim();
-      if (!isValidTraineeName(val)) {
-          alert("Pls add/register the Trainee first before adding yourself as the Caregiver. You can add the Trainee as Person 1, and add yourself as Person 2.");
-          input.value = '';
-          input.dataset.manual = 'false';
-      }
-  }
 }, 250);
 }
 
@@ -384,8 +378,8 @@ function filterTraineeDropdown(idx) {
 const input = document.getElementById(`reg-f-related-${idx}`);
 const dd = document.getElementById(`trainee-dropdown-${idx}`);
 if(!input || !dd) return;
-
-const query = input.value.toLowerCase().trim();
+const parts = input.value.split('|');
+const query = parts[parts.length - 1].toLowerCase().trim();
 
 let localTrainees = [];
 const allBlocks = Array.from(document.getElementsByClassName('member-block'));
@@ -438,14 +432,22 @@ dd.classList.remove('hidden-force');
 function selectTraineeDropdown(idx, name) {
 const input = document.getElementById(`reg-f-related-${idx}`);
 if(input) {
-  input.value = name;
+  let parts = input.value.split('|');
+  parts.pop();
+  parts.push(name);
+  input.value = parts.join(' | ') + ' | ';
   input.dataset.manual = 'true';
   const dd = document.getElementById(`trainee-dropdown-${idx}`);
   if(dd) dd.classList.add('hidden-force');
+  setTimeout(() => input.focus(), 10);
 }
 }
 
 async function submitRegistration(btn) {
+    if (document.querySelector('[data-invalid="true"]')) {
+        showToast("Please resolve all errors before submitting.", true);
+        return;
+    }
 let finalData = [];
 let blocks = document.getElementsByClassName('member-block');
 
@@ -492,4 +494,45 @@ try {
 } finally {
  setBtnLoading(btn, false); if (viewLoading) viewLoading.classList.add('hidden-force');
 }
+}
+async function checkDuplicateField(inputEl, fieldType) {
+    const val = inputEl.value.trim().toUpperCase();
+    if (!val) return;
+    
+    const warnEl = inputEl.previousElementSibling;
+    
+    // Check locally among currently filled blocks (to prevent same NRIC typed twice in the form)
+    let localDup = false;
+    const allInputs = document.querySelectorAll(fieldType === 'nric' ? '.reg-f-nric' : '.reg-f-pass');
+    let count = 0;
+    allInputs.forEach(inp => {
+        if (inp.value.trim().toUpperCase() === val) count++;
+    });
+    if (count > 1) {
+        warnEl.innerHTML = `Duplicate ${fieldType.toUpperCase()} in this form.`;
+        warnEl.classList.remove('hidden-force');
+        inputEl.classList.add('border-red-500', 'ring-red-500');
+        inputEl.setAttribute('data-invalid', 'true');
+        return;
+    }
+
+    try {
+        const payload = {};
+        if (fieldType === 'nric') payload.nric = val;
+        else payload.passport = val;
+        
+        const res = await apiCall('checkDuplicateParticipant', payload);
+        if (res.status === 'error' && res.conflictType) {
+            warnEl.innerHTML = `${res.conflictType} already exists. If you have already registered before, <a href="index.html" class="underline text-blue-600 hover:text-blue-800">login here</a> to make the necessary changes. Login format: NRIC/FIN + Year of Birth (e.g. S1234567A1989).`;
+            warnEl.classList.remove('hidden-force');
+            inputEl.classList.add('border-red-500', 'ring-red-500');
+            inputEl.setAttribute('data-invalid', 'true');
+        } else {
+            warnEl.classList.add('hidden-force');
+            inputEl.classList.remove('border-red-500', 'ring-red-500');
+            inputEl.removeAttribute('data-invalid');
+        }
+    } catch (e) {
+        console.error("Duplicate check failed:", e);
+    }
 }
