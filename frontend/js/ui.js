@@ -569,3 +569,295 @@ window.isValidNRIC = function(str) {
 
     return suffix === expectedSuffix;
 };
+
+const TOP_NATIONALITIES = ["Singaporean", "Malaysian", "Indonesian", "Filipino", "Burmese", "Indian"];
+const ALL_NATIONALITIES = [
+  "Afghan", "Albanian", "Algerian", "American", "Andorran", "Angolan", "Antiguans", "Argentinean", "Armenian", "Australian", "Austrian", "Azerbaijani",
+  "Bahamian", "Bahraini", "Bangladeshi", "Barbadian", "Barbudans", "Batswana", "Belarusian", "Belgian", "Belizean", "Beninese", "Bhutanese", "Bolivian", "Bosnian", "Brazilian", "British", "Bruneian", "Bulgarian", "Burkinabe", "Burmese", "Burundian",
+  "Cambodian", "Cameroonian", "Canadian", "Cape Verdean", "Central African", "Chadian", "Chilean", "Chinese", "Colombian", "Comoran", "Congolese", "Costa Rican", "Croatian", "Cuban", "Cypriot", "Czech",
+  "Danish", "Djibouti", "Dominican", "Dutch",
+  "East Timorese", "Ecuadorean", "Egyptian", "Emirian", "Equatorial Guinean", "Eritrean", "Estonian", "Ethiopian",
+  "Fijian", "Filipino", "Finnish", "French",
+  "Gabonese", "Gambian", "Georgian", "German", "Ghanaian", "Greek", "Grenadian", "Guatemalan", "Guinea-Bissauan", "Guinean", "Guyanese",
+  "Haitian", "Herzegovinian", "Honduran", "Hungarian",
+  "I-Kiribati", "Icelander", "Indian", "Indonesian", "Iranian", "Iraqi", "Irish", "Israeli", "Italian", "Ivorian",
+  "Jamaican", "Japanese", "Jordanian",
+  "Kazakhstani", "Kenyan", "Kittian and Nevisian", "Kuwaiti", "Kyrgyz",
+  "Laotian", "Latvian", "Lebanese", "Liberian", "Libyan", "Liechtensteiner", "Lithuanian", "Luxembourger",
+  "Macedonian", "Malagasy", "Malawian", "Malaysian", "Maldivan", "Malian", "Maltese", "Marshallese", "Mauritanian", "Mauritian", "Mexican", "Micronesian", "Moldovan", "Monacan", "Mongolian", "Moroccan", "Mosotho", "Motswana", "Mozambican",
+  "Namibian", "Nauruan", "Nepalese", "New Zealander", "Nicaraguan", "Nigerian", "Nigerien", "North Korean", "Northern Irish", "Norwegian",
+  "Omani",
+  "Pakistani", "Palauan", "Palestinian", "Panamanian", "Papua New Guinean", "Paraguayan", "Peruvian", "Polish", "Portuguese",
+  "Qatari",
+  "Romanian", "Russian", "Rwandan",
+  "Saint Lucian", "Salvadoran", "Samoan", "San Marinese", "Sao Tomean", "Saudi", "Scottish", "Senegalese", "Serbian", "Seychellois", "Sierra Leonean", "Singaporean", "Slovakian", "Slovenian", "Solomon Islander", "Somali", "South African", "South Korean", "Spanish", "Sri Lankan", "Sudanese", "Surinamer", "Swazi", "Swedish", "Swiss", "Syrian",
+  "Taiwanese", "Tajik", "Tanzanian", "Thai", "Togolese", "Tongan", "Trinidadian or Tobagonian", "Tunisian", "Turkish", "Tuvaluan",
+  "Ugandan", "Ukrainian", "Uruguayan", "Uzbekistani",
+  "Venezuelan", "Vietnamese",
+  "Welsh",
+  "Yemenite",
+  "Zambian", "Zimbabwean"
+];
+const OTHER_NATIONALITIES = ALL_NATIONALITIES.filter(n => !TOP_NATIONALITIES.includes(n)).sort((a, b) => a.localeCompare(b));
+window.NATIONALITIES_LIST = [...TOP_NATIONALITIES, ...OTHER_NATIONALITIES];
+
+window.setupNationalityDropdown = function(inputId) {
+    const input = document.getElementById(inputId);
+    if (!input || input.dataset.natInit) return;
+    input.dataset.natInit = "true";
+
+    // Hide original input
+    input.classList.add('hidden-force');
+    
+    // Create UI container
+    const wrapper = document.createElement('div');
+    wrapper.className = 'relative w-full';
+    input.parentNode.insertBefore(wrapper, input);
+    wrapper.appendChild(input);
+
+    const displayBtn = document.createElement('button');
+    displayBtn.type = 'button';
+    displayBtn.className = 'w-full p-2.5 border border-gray-300 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary flex justify-between items-center text-left min-h-[42px]';
+    
+    const displaySpan = document.createElement('span');
+    displaySpan.className = 'truncate text-sm ' + (input.value ? 'font-semibold' : 'text-gray-400');
+    displaySpan.textContent = input.value || 'Select Nationality';
+    
+    const chevron = document.createElement('div');
+    chevron.innerHTML = '<svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>';
+    
+    displayBtn.appendChild(displaySpan);
+    displayBtn.appendChild(chevron);
+    wrapper.appendChild(displayBtn);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'absolute z-[100] w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl hidden-force flex flex-col max-h-64 overflow-hidden';
+    
+    const searchHeader = document.createElement('div');
+    searchHeader.className = 'p-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2 bg-gray-50 dark:bg-gray-900/50';
+    
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search...';
+    searchInput.className = 'flex-1 p-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:border-primary';
+    
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.title = "Clear Field";
+    clearBtn.className = 'p-1.5 text-gray-400 hover:text-red-500 transition focus:outline-none';
+    clearBtn.innerHTML = '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>';
+    
+    searchHeader.appendChild(searchInput);
+    searchHeader.appendChild(clearBtn);
+    dropdown.appendChild(searchHeader);
+
+    const listCont = document.createElement('div');
+    listCont.className = 'overflow-y-auto custom-scrollbar flex-1';
+    dropdown.appendChild(listCont);
+    wrapper.appendChild(dropdown);
+
+    const renderList = (query) => {
+        const q = (query || '').toLowerCase();
+        let html = '';
+        const filtered = window.NATIONALITIES_LIST.filter(n => n.toLowerCase().includes(q));
+        
+        if (filtered.length === 0) {
+            html = '<div class="p-3 text-xs text-center text-gray-500">No results found</div>';
+        } else {
+            html = filtered.map(n => {
+                const isTop = TOP_NATIONALITIES.includes(n);
+                const styling = isTop ? 'font-bold text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-900/30' : 'font-medium text-gray-700 dark:text-gray-300';
+                return `<div class="p-2.5 border-b border-gray-100 dark:border-gray-700 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 text-sm ${styling} nat-opt" data-val="${n}">${n}</div>`;
+            }).join('');
+        }
+        listCont.innerHTML = html;
+        
+        Array.from(listCont.getElementsByClassName('nat-opt')).forEach(opt => {
+            opt.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const val = opt.dataset.val;
+                input.value = val;
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                displaySpan.textContent = val;
+                displaySpan.className = 'truncate text-sm font-semibold';
+                dropdown.classList.add('hidden-force');
+            });
+        });
+    };
+
+    displayBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isHidden = dropdown.classList.contains('hidden-force');
+        document.querySelectorAll('.nat-dropdown-open').forEach(d => {
+            if(d !== dropdown) d.classList.add('hidden-force');
+        });
+        if (isHidden) {
+            dropdown.classList.remove('hidden-force');
+            dropdown.classList.add('nat-dropdown-open');
+            searchInput.value = '';
+            renderList('');
+            setTimeout(() => searchInput.focus(), 50);
+        } else {
+            dropdown.classList.add('hidden-force');
+            dropdown.classList.remove('nat-dropdown-open');
+        }
+    });
+
+    searchInput.addEventListener('input', (e) => {
+        renderList(e.target.value);
+    });
+
+    clearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        input.value = '';
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        input.dispatchEvent(new Event('change', {bubbles:true}));
+        displaySpan.textContent = 'Select Nationality';
+        displaySpan.className = 'truncate text-sm text-gray-400';
+        dropdown.classList.add('hidden-force');
+        dropdown.classList.remove('nat-dropdown-open');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!wrapper.contains(e.target)) {
+            dropdown.classList.add('hidden-force');
+            dropdown.classList.remove('nat-dropdown-open');
+        }
+    });
+};
+
+
+document.addEventListener("DOMContentLoaded", () => {
+    if (!document.getElementById('datePickerSheet')) {
+        const div = document.createElement('div');
+        div.id = "datePickerSheet";
+        div.className = "fixed inset-0 bg-black/60 z-[120] hidden-force flex flex-col justify-end";
+        div.innerHTML = `<div class="bg-white dark:bg-gray-900 rounded-t-3xl w-full max-w-md mx-auto overflow-hidden shadow-2xl animate-slide-up border-t border-gray-200 dark:border-gray-800"><div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-800"><span class="font-bold text-lg text-gray-800 dark:text-gray-100">Select Date</span><button type="button" onclick="closePicker()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl font-bold px-2 focus:outline-none">&times;</button></div><div class="relative flex h-[200px] text-lg font-bold bg-white dark:bg-gray-950"><div class="picker-highlight"></div><div class="flex-1 picker-col" id="colDay"></div><div class="flex-1 picker-col" id="colMonth"></div><div class="flex-1 picker-col" id="colYear"></div></div><div class="p-5 border-t border-gray-200 dark:border-gray-800"><button type="button" onclick="confirmPicker()" class="w-full bg-primary text-white py-3.5 rounded-xl font-bold text-lg shadow-md focus:outline-none hover:bg-green-600 transition">Done</button></div></div>`;
+        document.body.appendChild(div);
+    }
+});
+
+let currentPickerTarget = null; 
+const monthsArr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+window.openDatePicker = function openDatePicker(targetId, type) {
+  currentPickerTarget = targetId; 
+  document.getElementById('datePickerSheet').classList.remove('hidden-force');
+  
+  const colD = document.getElementById('colDay'); 
+  const colM = document.getElementById('colMonth'); 
+  const colY = document.getElementById('colYear');
+  const spacer = '<div style="height: 80px;"></div>'; 
+  
+  let dHtml = spacer; 
+  for(let i=1; i<=31; i++) { 
+    let val = String(i).padStart(2,'0'); 
+    dHtml += `<div class="picker-item text-gray-400" data-val="${val}" onclick="scrollToIndex('colDay', ${i-1})">${val}</div>`; 
+  } 
+  dHtml += spacer;
+  
+  let mHtml = spacer; 
+  monthsArr.forEach((m, i) => { 
+    mHtml += `<div class="picker-item text-gray-400" data-val="${m}" onclick="scrollToIndex('colMonth', ${i})">${m}</div>`; 
+  }); 
+  mHtml += spacer;
+  
+  let yHtml = spacer; 
+  const curYear = new Date().getFullYear(); 
+  let startYear, endYear, step;
+  
+  if(type === 'dob') { 
+    startYear = curYear; endYear = 1920; step = -1; 
+  } else { 
+    startYear = curYear; endYear = curYear + 20; step = 1; 
+  }
+  
+  let idx = 0; 
+  for(let i = startYear; type === 'dob' ? i >= endYear : i <= endYear; i += step) { 
+    yHtml += `<div class="picker-item text-gray-400" data-val="${i}" onclick="scrollToIndex('colYear', ${idx})">${i}</div>`; 
+    idx++; 
+  } 
+  yHtml += spacer;
+  
+  colD.innerHTML = dHtml; colM.innerHTML = mHtml; colY.innerHTML = yHtml;
+  colD.onscroll = () => highlightCenterItem('colDay'); 
+  colM.onscroll = () => highlightCenterItem('colMonth'); 
+  colY.onscroll = () => highlightCenterItem('colYear');
+  
+  const curVal = document.getElementById(targetId).value;
+  setTimeout(() => {
+    if(curVal) { 
+      const parts = curVal.split(' '); 
+      if(parts.length === 3) {
+        const dIdx = Array.from(colD.querySelectorAll('.picker-item')).findIndex(el => el.dataset.val === parts[0]); 
+        const mIdx = Array.from(colM.querySelectorAll('.picker-item')).findIndex(el => el.dataset.val === parts[1]); 
+        const yIdx = Array.from(colY.querySelectorAll('.picker-item')).findIndex(el => el.dataset.val === parts[2]);
+        if(dIdx > -1) colD.scrollTop = dIdx * 40; 
+        if(mIdx > -1) colM.scrollTop = mIdx * 40; 
+        if(yIdx > -1) colY.scrollTop = yIdx * 40;
+      } 
+    } else { 
+      colD.scrollTop = 0; colM.scrollTop = 0; colY.scrollTop = 0; 
+    }
+    highlightCenterItem('colMonth'); highlightCenterItem('colYear'); highlightCenterItem('colDay');
+  }, 10);
+}
+
+window.scrollToIndex = function scrollToIndex(colId, index) { 
+  document.getElementById(colId).scrollTo({ top: index * 40, behavior: 'smooth' }); 
+}
+
+function highlightCenterItem(colId) {
+  const col = document.getElementById(colId); 
+  const visibleItems = Array.from(col.querySelectorAll('.picker-item')).filter(i => !i.classList.contains('hidden-force'));
+  if(!visibleItems.length) return; 
+  
+  let index = Math.round(col.scrollTop / 40); 
+  if (index >= visibleItems.length) index = visibleItems.length - 1; 
+  
+  visibleItems.forEach((item, i) => {
+    if(i === index) { 
+      item.classList.remove('text-gray-400'); 
+      item.classList.add('text-primary', 'font-extrabold', 'text-3xl'); 
+      item.dataset.selected = "true"; 
+    } else { 
+      item.classList.add('text-gray-400'); 
+      item.classList.remove('text-primary', 'font-extrabold', 'text-3xl'); 
+      item.dataset.selected = "false"; 
+    }
+  });
+  
+  if(colId === 'colMonth' || colId === 'colYear') updateValidDays();
+}
+
+function updateValidDays() {
+  const mItem = document.querySelector('#colMonth .picker-item[data-selected="true"]'); 
+  const yItem = document.querySelector('#colYear .picker-item[data-selected="true"]'); 
+  if(!mItem || !yItem) return;
+  
+  const maxDays = new Date(parseInt(yItem.dataset.val), monthsArr.indexOf(mItem.dataset.val) + 1, 0).getDate(); 
+  const colD = document.getElementById('colDay');
+  
+  colD.querySelectorAll('.picker-item').forEach((item) => {
+    const shouldHide = parseInt(item.dataset.val) > maxDays;
+    if(shouldHide && !item.classList.contains('hidden-force')) item.classList.add('hidden-force'); 
+    if(!shouldHide && item.classList.contains('hidden-force')) item.classList.remove('hidden-force');
+  });
+  
+  if (colD.scrollTop > (maxDays - 1) * 40) scrollToIndex('colDay', maxDays - 1);
+}
+
+window.confirmPicker = function confirmPicker() {
+  const d = document.querySelector('#colDay .picker-item[data-selected="true"]'); 
+  const m = document.querySelector('#colMonth .picker-item[data-selected="true"]'); 
+  const y = document.querySelector('#colYear .picker-item[data-selected="true"]');
+  if(d && m && y && currentPickerTarget) {
+    document.getElementById(currentPickerTarget).value = `${d.dataset.val} ${m.dataset.val} ${y.dataset.val}`; 
+  }
+  closePicker();
+}
+
+window.closePicker = function closePicker() { 
+  document.getElementById('datePickerSheet').classList.add('hidden-force'); 
+}
