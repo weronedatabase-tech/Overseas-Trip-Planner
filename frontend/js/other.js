@@ -11,7 +11,7 @@ let otherCols = JSON.parse(localStorage.getItem('otherCols_v2')) || [
 let traineeShortNames = {};
 
 function buildOtherUI() {
-document.getElementById('tab-other').innerHTML = `
+const el_tab_other = document.getElementById('tab-other'); if(el_tab_other) el_tab_other.innerHTML = `
 <div class="flex flex-col h-full w-full relative bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden">
    <div class="py-1.5 px-2 md:px-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center gap-2 shrink-0">
        <div class="flex items-center gap-2">
@@ -21,7 +21,7 @@ document.getElementById('tab-other').innerHTML = `
            </h3>
        </div>
        <div class="flex items-center gap-2">
-           <select onchange="if(this.value) window.location.href=this.value" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
+           <select onchange="if(this.value) navigateTo(this.value)" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
                <option value="" disabled>Custom Views</option>
                <option value="medical.html">Medical</option>
                <option value="diet.html">Dietary</option>
@@ -61,12 +61,28 @@ loadOtherData();
 }
 
 async function loadOtherData() {
+    await new Promise(resolve => setTimeout(resolve, 10)); // Yield to allow browser paint
+
+if (window.adminRosterData && window.adminRosterData.length > 0) {
+    otherRosterData = window.adminRosterData;
+    if (typeof applyCaregiverLabels === "function") applyCaregiverLabels(otherRosterData);
+    traineeShortNames = {};
+    otherRosterData.forEach(p => {
+        if(p.role === 'TRAINEE' && p.fullName) {
+            traineeShortNames[String(p.fullName || '').trim().toUpperCase()] = String(p.shortName || p.fullName || '').trim().toUpperCase();
+        }
+    });
+    renderOtherTable();
+    const loader = document.getElementById('otherLoading');
+    if(loader) loader.classList.add('hidden-force');
+    return;
+}
 const loader = document.getElementById('otherLoading');
 if(loader) loader.classList.remove('hidden-force');
 
 try {
    const res = await apiCall('fetchAdminRoster');
-   otherRosterData = res.roster || [];
+   otherRosterData = res.roster || []; window.adminRosterData = otherRosterData;
    if (typeof applyCaregiverLabels === "function") applyCaregiverLabels(otherRosterData);
 
    traineeShortNames = {};
@@ -171,9 +187,11 @@ if(fromIdx > -1 && toIdx > -1) {
 
 function renderOtherTable() {
 let data = otherRosterData.filter(p => {
-    const hasNotes = p.otherPoints && !['', '-', 'nil', 'na', 'n/a', 'none', 'no'].includes(p.otherPoints.trim().toLowerCase());
-    const hasSleeping = p.sleeping && !['', '-', 'nil', 'na', 'n/a', 'none', 'no'].includes(p.sleeping.trim().toLowerCase());
-    return hasNotes || hasSleeping;
+    const notes = p.otherPoints ? p.otherPoints.trim().toLowerCase() : '';
+    const sleep = p.sleeping ? p.sleeping.trim().toLowerCase() : '';
+    const hasNotes = notes !== '' && notes !== '-' && notes !== 'nil' && notes !== 'na' && notes !== 'n/a' && notes !== 'none' && notes !== 'no';
+    const hasSleep = sleep !== '' && sleep !== '-' && sleep !== 'nil' && sleep !== 'na' && sleep !== 'n/a' && sleep !== 'none' && sleep !== 'no';
+    return hasNotes || hasSleep;
 });
 if (otherSearchQuery) {
    data = data.filter(p => {
@@ -198,10 +216,10 @@ let headHtml = `<tr>
        <div class="font-bold text-gray-700 dark:text-gray-300">Participant</div>
    </th>
    <th class="py-1.5 px-2 bg-gray-100 dark:bg-gray-800 align-top sticky top-0 z-10 w-[65%] text-left">
-       <div class="font-bold text-gray-700 dark:text-gray-300">Notes & Sleeping</div>
+       <div class="font-bold text-gray-700 dark:text-gray-300">Other Notes</div>
    </th>
 </tr>`;
-thead.innerHTML = headHtml;
+if (thead) thead.innerHTML = headHtml;
 
 const tbody = document.getElementById('otherTableBody');
 let html = '';
@@ -225,17 +243,21 @@ data.forEach(p => {
        <td class="py-1.5 px-2 align-top w-[65%] text-xs leading-relaxed whitespace-normal break-words border-l border-gray-100 dark:border-gray-700/50">
            <div class="flex flex-col gap-3">`;
 
-   const hasNotes = p.otherPoints && !['', '-', 'nil', 'na', 'n/a', 'none', 'no'].includes(p.otherPoints.trim().toLowerCase());
-   const hasSleeping = p.sleeping && !['', '-', 'nil', 'na', 'n/a', 'none', 'no'].includes(p.sleeping.trim().toLowerCase());
    
+   const hasNotes = p.otherPoints && p.otherPoints.trim() && p.otherPoints.trim().toLowerCase() !== 'nil' && p.otherPoints.trim().toLowerCase() !== 'none';
+   const hasSleep = p.sleeping && p.sleeping.trim() && p.sleeping.trim().toLowerCase() !== 'nil' && p.sleeping.trim().toLowerCase() !== 'none';
+   if (hasSleep) {
+       html += `<div><span class="text-indigo-700 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap">${p.sleeping}</span></div>`;
+   }
    if (hasNotes) {
-       html += `<div><p class="text-[10px] font-bold text-gray-400 uppercase mb-0.5">Other Notes</p><span class="text-indigo-700 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap">${p.otherPoints}</span></div>`;
+       html += `<div><span class="text-orange-700 dark:text-orange-400 font-bold bg-orange-50 dark:bg-orange-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap">${p.otherPoints}</span></div>`;
    }
-   if (hasSleeping) {
-       html += `<div><p class="text-[10px] font-bold text-gray-400 uppercase mb-0.5">Sleeping Arrangements</p><span class="text-rose-700 dark:text-rose-400 font-bold bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap">${p.sleeping}</span></div>`;
-   }
+
+   
+   
+   
    html += `</div></td></tr>`;
 });
 
-tbody.innerHTML = html || `<tr><td colspan="2" class="p-6 text-center text-sm uppercase tracking-widest text-gray-500 dark:text-gray-400 font-bold">No records found matching the criteria.</td></tr>`;
+if (tbody) tbody.innerHTML = html || `<tr><td colspan="2" class="p-6 text-center text-sm uppercase tracking-widest text-gray-500 dark:text-gray-400 font-bold">No records found matching the criteria.</td></tr>`;
 }

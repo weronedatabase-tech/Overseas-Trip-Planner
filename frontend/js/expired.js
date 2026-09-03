@@ -12,7 +12,7 @@ let medCols = JSON.parse(localStorage.getItem('expiredCols')) || [
 let traineeShortNames = {};
 
 function buildExpiredUI() {
-document.getElementById('tab-expired').innerHTML = `
+const el_tab_expired = document.getElementById('tab-expired'); if(el_tab_expired) el_tab_expired.innerHTML = `
 <div class="flex flex-col h-full w-full relative bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden">
    <div class="py-1.5 px-2 md:px-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center gap-2 shrink-0">
        <div class="flex items-center gap-2">
@@ -22,7 +22,7 @@ document.getElementById('tab-expired').innerHTML = `
            </h3>
        </div>
        <div class="flex items-center gap-2">
-           <select onchange="if(this.value) window.location.href=this.value" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
+           <select onchange="if(this.value) navigateTo(this.value)" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
                <option value="" disabled>Custom Views</option>
                <option value="medical.html">Medical</option>
                <option value="diet.html">Dietary</option>
@@ -62,6 +62,22 @@ loadExpiredData();
 }
 
 async function loadExpiredData() {
+    await new Promise(resolve => setTimeout(resolve, 10)); // Yield to allow browser paint
+
+if (window.adminRosterData && window.adminRosterData.length > 0) {
+    expiredRosterData = window.adminRosterData;
+    if (typeof applyCaregiverLabels === "function") applyCaregiverLabels(expiredRosterData);
+    traineeShortNames = {};
+    expiredRosterData.forEach(p => {
+        if(p.role === 'TRAINEE' && p.fullName) {
+            traineeShortNames[String(p.fullName || '').trim().toUpperCase()] = String(p.shortName || p.fullName || '').trim().toUpperCase();
+        }
+    });
+    renderExpiredTable();
+    const loader = document.getElementById('expiredLoading');
+    if(loader) loader.classList.add('hidden-force');
+    return;
+}
 const loader = document.getElementById('medicalLoading');
 if(loader) loader.classList.remove('hidden-force');
 
@@ -220,7 +236,7 @@ let headHtml = `<tr>
        <div class="font-bold text-gray-700 dark:text-gray-300">Passport Details</div>
    </th>
 </tr>`;
-thead.innerHTML = headHtml;
+if (thead) thead.innerHTML = headHtml;
 
 const tbody = document.getElementById('medicalTableBody');
 let html = '';
@@ -270,5 +286,5 @@ data.forEach(p => {
    html += `</div></td></tr>`;
 });
 
-tbody.innerHTML = html || `<tr><td colspan="2" class="p-6 text-center text-sm uppercase tracking-widest text-gray-500 dark:text-gray-400 font-bold">No records found matching the criteria.</td></tr>`;
+if (tbody) tbody.innerHTML = html || `<tr><td colspan="2" class="p-6 text-center text-sm uppercase tracking-widest text-gray-500 dark:text-gray-400 font-bold">No records found matching the criteria.</td></tr>`;
 }

@@ -23,7 +23,7 @@ document.getElementById('tab-medical').innerHTML = `
            </h3>
        </div>
        <div class="flex items-center gap-2">
-           <select onchange="if(this.value) window.location.href=this.value" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
+           <select onchange="if(this.value) navigateTo(this.value)" class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs md:text-xs font-bold px-2.5 py-1.5 rounded-md hover:border-gray-400 focus:outline-none focus:ring-1 focus:ring-primary shadow-sm cursor-pointer shrink-0">
                <option value="" disabled>Custom Views</option>
                <option value="medical.html" selected>Medical</option>
                <option value="diet.html">Dietary</option>
@@ -63,12 +63,28 @@ loadMedicalData();
 }
 
 async function loadMedicalData() {
+    await new Promise(resolve => setTimeout(resolve, 10)); // Yield to allow browser paint
+
+if (window.adminRosterData && window.adminRosterData.length > 0) {
+    medicalRosterData = window.adminRosterData;
+    if (typeof applyCaregiverLabels === "function") applyCaregiverLabels(medicalRosterData);
+    traineeShortNames = {};
+    medicalRosterData.forEach(p => {
+        if(p.role === 'TRAINEE' && p.fullName) {
+            traineeShortNames[String(p.fullName || '').trim().toUpperCase()] = String(p.shortName || p.fullName || '').trim().toUpperCase();
+        }
+    });
+    renderMedicalTable();
+    const loader = document.getElementById('medicalLoading');
+    if(loader) loader.classList.add('hidden-force');
+    return;
+}
 const loader = document.getElementById('medicalLoading');
 if(loader) loader.classList.remove('hidden-force');
 
 try {
    const res = await apiCall('fetchAdminRoster');
-   medicalRosterData = res.roster || [];
+   medicalRosterData = res.roster || []; window.adminRosterData = medicalRosterData;
    if (typeof applyCaregiverLabels === "function") applyCaregiverLabels(medicalRosterData);
 
    traineeShortNames = {};

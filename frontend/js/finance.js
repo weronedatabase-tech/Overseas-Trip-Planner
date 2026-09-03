@@ -62,6 +62,8 @@ return globalFinanceRates[currency] || 1;
 }
 
 async function buildFinanceUI() {
+    await new Promise(resolve => setTimeout(resolve, 10));
+
 document.getElementById('tab-finance').innerHTML = `
 <div class="sticky top-0 z-40 flex items-center justify-between bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 shrink-0 rounded-t-xl md:rounded-none pr-2">
     <div class="flex overflow-x-auto scrollbar-hide flex-1 px-2 pt-1">
@@ -102,6 +104,19 @@ try {
         } catch(e) {}
     }
 
+    if (window.financeConfig && window.financeConfig.ts) {
+        financeConfig = window.financeConfig;
+        financeOptions = window.financeOptions;
+        globalFinanceRates = window.globalFinanceRates;
+        globalReceipts = window.globalReceipts;
+        
+        renderAllFinanceTabs();
+        startFinancePolling();
+        const loader = document.getElementById('finLoadingOverlay');
+        if(loader) loader.classList.add('hidden-force');
+        return;
+    }
+
     const [finRes, recRes] = await Promise.all([
         apiCall('fetchFinance').catch(e => { console.warn("fetchFinance failed", e); return { data: { options: [], config: {} }, rates: { "SGD": 1 } }; }),
         apiCall('fetchReceipts').catch(e => { console.warn("fetchReceipts failed", e); return { receipts: [] }; })
@@ -137,6 +152,11 @@ try {
         if(opt._isCollapsed === undefined) opt._isCollapsed = isFinanceCollapsed;
         return opt;
     });
+    
+    window.financeConfig = financeConfig;
+    window.financeOptions = financeOptions;
+    window.globalFinanceRates = globalFinanceRates;
+    window.globalReceipts = globalReceipts;
 
     if (financeOptions.length === 0) {
         addFinanceOption("Option 1", false);
@@ -390,7 +410,7 @@ const cont = document.getElementById('fin-tab-finalized');
 if(!cont || cont.classList.contains('hidden-force')) return;
 
 if(!financeConfig.finalOptionId) {
-    cont.innerHTML = `
+    if (cont) cont.innerHTML = `
     <div class="flex flex-col items-center justify-center p-12 text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
         <svg class="w-16 h-16 mb-4 opacity-50 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
         <p class="font-bold text-base text-gray-700 dark:text-gray-300">No Finalized Option Selected</p>
@@ -401,7 +421,7 @@ if(!financeConfig.finalOptionId) {
 
 const opt = financeOptions.find(o => o.id === financeConfig.finalOptionId && !o.isDeleted);
 if(!opt) {
-    cont.innerHTML = `
+    if (cont) cont.innerHTML = `
     <div class="flex flex-col items-center justify-center p-12 text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
         <svg class="w-16 h-16 mb-4 opacity-50 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
         <p class="font-bold text-base text-gray-700 dark:text-gray-300">No Finalized Option Selected</p>
@@ -442,7 +462,7 @@ opt.fields.forEach(f => {
     </tr>`;
 });
 
-cont.innerHTML = `
+if (cont) cont.innerHTML = `
 <div class="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden">
     <div class="bg-green-50 dark:bg-green-900/20 p-4 border-b border-green-100 dark:border-green-800 flex justify-between items-center">
         <div>
@@ -632,7 +652,7 @@ if (activeOptions.length === 0) {
     });
 }
 html += '</div>';
-cont.innerHTML = globalSettingsHtml + html;
+if (cont) cont.innerHTML = globalSettingsHtml + html;
 }
 
 function openFinanceRatesModal() {
@@ -654,7 +674,7 @@ Object.keys(globalFinanceRates).forEach(c => {
         <div class="font-black text-xs text-gray-800 dark:text-gray-200 shrink-0">SGD</div>
     </div>`;
 });
-list.innerHTML = html;
+if (list) list.innerHTML = html;
 document.getElementById('financeRatesModal').classList.remove('hidden-force');
 }
 
@@ -880,7 +900,7 @@ if(!cont || cont.classList.contains('hidden-force')) return;
 const activeReceipts = globalReceipts.filter(r => !r.isDeleted && r.categoryId !== "Fees Payment Screenshot").sort((a,b) => b.ts - a.ts);
 
 if(activeReceipts.length === 0) {
-    cont.innerHTML = `<div class="w-full py-10 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500"><svg class="w-12 h-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg><p class="text-xs font-bold uppercase tracking-widest">No receipts uploaded.</p></div>`;
+    if (cont) cont.innerHTML = `<div class="w-full py-10 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500"><svg class="w-12 h-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg><p class="text-xs font-bold uppercase tracking-widest">No receipts uploaded.</p></div>`;
     return;
 }
 
@@ -935,7 +955,7 @@ activeReceipts.forEach(r => {
     </tr>`;
 });
 
-cont.innerHTML = `
+if (cont) cont.innerHTML = `
 <div class="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden">
     <div class="overflow-x-auto custom-scrollbar">
         <table class="w-full text-left border-collapse min-w-[800px]">
@@ -1113,7 +1133,7 @@ cardsData.forEach(c => {
     </div>`;
 });
 
-cont.innerHTML = `
+if (cont) cont.innerHTML = `
 <div class="bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-2 mb-3 flex flex-col gap-2">
     <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
         <div class="flex flex-wrap items-center gap-2 md:gap-3">
@@ -1167,7 +1187,7 @@ window.updateDeviationLocal = function(poc, size) {
     const baseFee = financeConfig.perPersonFee || 0;
     const dev = parseFloat(devInput.value.replace(/,/g, '')) || 0;
     const finalExpected = (size * baseFee) + dev;
-    expectedDisplay.innerHTML = `<span class="text-xs opacity-50 font-bold mr-1">$</span><span>${finalExpected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>`;
+    if (expectedDisplay) expectedDisplay.innerHTML = `<span class="text-xs opacity-50 font-bold mr-1">$</span><span>${finalExpected.toLocaleString('en-US', {minimumFractionDigits:2})}</span>`;
 }
 
 function updateFeeDeviation(poc, field, value) {

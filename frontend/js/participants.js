@@ -21,6 +21,7 @@ let rosterCols = JSON.parse(localStorage.getItem('rosterCols')) || [
 { id: 'emergencyContact', label: 'Emerg. Contact', width: 120, visible: true },
 { id: 'diet', label: 'Dietary', width: 180, visible: true },
 { id: 'medical', label: 'Medical & Medications', width: 220, visible: true },
+{ id: 'sleeping', label: 'Sleeping Arrangements', width: 200, visible: true },
 { id: 'otherPoints', label: 'Other Notes', width: 220, visible: true }
 ];
 
@@ -36,14 +37,13 @@ if (!rosterCols.find(c => c.id === 'medical')) {
     if (oldOther) oldOther.label = 'Other Notes';
     localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
 }
-
-
-
 if (!rosterCols.find(c => c.id === 'sleeping')) {
     const otherIdx = rosterCols.findIndex(c => c.id === 'otherPoints');
-    rosterCols.splice(otherIdx > -1 ? otherIdx : rosterCols.length, 0, { id: 'sleeping', label: 'Sleeping Arrangements', width: 220, visible: true });
+    rosterCols.splice(otherIdx > -1 ? otherIdx : rosterCols.length, 0, { id: 'sleeping', label: 'Sleeping Arrangements', width: 200, visible: true });
     localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
 }
+
+
 // Force hide role and group in existing localStorage rosterCols if they are still visible
 const savedCols = JSON.parse(localStorage.getItem('rosterCols'));
 if (savedCols) {
@@ -75,7 +75,7 @@ document.getElementById('tab-participants').innerHTML = `
            </button>
        </div>
        <div class="flex items-center gap-2">
-           <select onchange="if(this.value) window.location.href=this.value" class="bg-primary text-white border border-transparent text-xs md:text-sm font-black px-3 py-1.5 rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1 dark:focus:ring-offset-gray-900 shadow-md cursor-pointer shrink-0 transition">
+           <select onchange="if(this.value) navigateTo(this.value)" class="bg-primary text-white border border-transparent text-xs md:text-sm font-black px-3 py-1.5 rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1 dark:focus:ring-offset-gray-900 shadow-md cursor-pointer shrink-0 transition">
                <option value="" disabled selected class="bg-white dark:bg-gray-800 text-gray-400">Custom Views</option>
                <option value="medical.html" class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white">Medical</option>
                <option value="diet.html" class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white">Dietary</option>
@@ -110,15 +110,15 @@ document.getElementById('tab-participants').innerHTML = `
                Columns <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
            </button>
            <div id="columnSelector" class="hidden-force absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl z-30 p-2 flex flex-col gap-1 max-h-96 overflow-y-auto custom-scrollbar">
-              <div class="mb-1 px-1 border-b border-gray-100 dark:border-gray-700 pb-1">
-                  <label class="flex items-center gap-2 p-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 rounded cursor-pointer transition">
-                      <input type="checkbox" id="toggleAllColsCheckbox" ${rosterCols.every(c => c.visible) ? 'checked' : ''} onchange="toggleAllRosterColumns(this.checked)" class="w-4 h-4 text-indigo-600 rounded border-gray-300">
-                      <span class="text-[11px] font-bold text-indigo-700 dark:text-indigo-400 uppercase tracking-wider">Toggle All</span>
+              <div class="px-1.5 pb-2 mb-1 border-b border-gray-100 dark:border-gray-700">
+                  <label class="flex items-center gap-2 cursor-pointer transition">
+                      <input type="checkbox" id="checkAllRosterColumns" onchange="toggleAllRosterColumns(this.checked)" class="w-4 h-4 text-primary rounded border-gray-300">
+                      <span class="text-xs font-black text-gray-900 dark:text-white uppercase tracking-wider">Toggle All</span>
                   </label>
               </div>
               ${rosterCols.map(c => `
                 <label class="flex items-center gap-2 p-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 rounded cursor-pointer transition">
-                  <input type="checkbox" value="${c.id}" ${c.visible ? 'checked' : ''} onchange="toggleRosterColumn('${c.id}', this.checked)" class="w-4 h-4 text-primary rounded border-gray-300">
+                  <input type="checkbox" value="${c.id}" ${c.visible ? 'checked' : ''} onchange="toggleRosterColumn('${c.id}', this.checked)" class="w-4 h-4 text-primary rounded border-gray-300 roster-col-cb">
                   <span class="text-xs font-bold text-gray-700 dark:text-gray-200">${c.label}</span>
                 </label>
               `).join('')}
@@ -154,6 +154,7 @@ document.addEventListener('click', (e) => {
 });
 
 renderSortRulesUI();
+updateCheckAllRosterColumnsState();
 loadParticipantsData();
 }
 
@@ -164,18 +165,31 @@ function toggleRosterColumn(colId, isVisible) {
 const c = rosterCols.find(x => x.id === colId);
 if(c) c.visible = isVisible;
 localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
-const allChecked = rosterCols.every(x => x.visible);
-const toggleAllCb = document.getElementById('toggleAllColsCheckbox');
-if (toggleAllCb) toggleAllCb.checked = allChecked;
+updateCheckAllRosterColumnsState();
 renderRosterTable();
 }
 
-window.toggleAllRosterColumns = function(isChecked) {
-    rosterCols.forEach(c => c.visible = isChecked);
-    localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
-    document.querySelectorAll('#columnSelector input[type="checkbox"]:not(#toggleAllColsCheckbox)').forEach(cb => cb.checked = isChecked);
-    renderRosterTable();
-};
+function toggleAllRosterColumns(isChecked) {
+   rosterCols.forEach(c => {
+      c.visible = isChecked;
+   });
+   localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
+   document.querySelectorAll('.roster-col-cb').forEach(cb => cb.checked = isChecked);
+   updateCheckAllRosterColumnsState();
+   renderRosterTable();
+}
+
+function updateCheckAllRosterColumnsState() {
+   const checkAll = document.getElementById('checkAllRosterColumns');
+   if (checkAll) {
+       const allChecked = rosterCols.every(c => c.visible);
+       const someChecked = rosterCols.some(c => c.visible);
+       checkAll.checked = allChecked;
+       checkAll.indeterminate = someChecked && !allChecked;
+   }
+}
+
+   
 
 
 window.showRosterBreakdownModal = function() {
@@ -245,6 +259,16 @@ window.showRosterBreakdownModal = function() {
 };
 
 async function loadParticipantsData() {
+    await new Promise(resolve => setTimeout(resolve, 10)); // Yield to allow browser paint
+
+if (adminRosterData && adminRosterData.length > 0) {
+    if (typeof processDisplayNames === "function") processDisplayNames(adminRosterData);
+    if (typeof applyGlobalSorting === "function") adminRosterData = applyGlobalSorting(adminRosterData);
+    renderRosterTable();
+    const loader = document.getElementById('rosterLoading');
+    if(loader) loader.classList.add('hidden-force');
+    return;
+}
 const loader = document.getElementById('rosterLoading');
 if(loader) loader.classList.remove('hidden-force');
 
@@ -254,7 +278,7 @@ try {
         apiCall('fetchLogistics').catch(e => { console.warn("fetchLogistics failed", e); return null; })
     ]);
    
-   adminRosterData = rostRes.roster || []; applyCaregiverLabels(adminRosterData);
+   adminRosterData = rostRes.roster || []; applyCaregiverLabels(adminRosterData); window.adminRosterData = adminRosterData;
    const logisticsData = logRes || { rooms: [], pairings: [] };
    
    traineeShortNames = {};
@@ -300,6 +324,7 @@ try {
        p.pairings = myPairings.length > 0 ? Array.from(new Set(myPairings)).join(', ') : 'NONE';
    });
 
+   updateCheckAllRosterColumnsState();
    renderRosterTable();
 } catch(e) {
    console.error(e); showToast("Error: " + e.message, true);
@@ -419,6 +444,7 @@ if(fromIdx > -1 && toIdx > -1) {
    const [moved] = rosterCols.splice(fromIdx, 1);
    rosterCols.splice(toIdx, 0, moved);
    localStorage.setItem('rosterCols', JSON.stringify(rosterCols));
+   updateCheckAllRosterColumnsState();
    renderRosterTable();
 }
 }
@@ -612,12 +638,12 @@ data.forEach(p => {
            } else if (c.id === 'medical') {
                const hasMedical = p.medical && p.medical.trim() && p.medical.trim().toLowerCase() !== 'nil' && p.medical.trim().toLowerCase() !== 'none';
                html += `<td class="${baseClass}" ${styleStr}>${hasMedical ? `<span class="text-rose-700 dark:text-rose-400 font-bold bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap leading-tight">${p.medical}</span>` : `<span class="text-gray-400 italic">NONE</span>`}</td>`;
-           } else if (c.id === 'sleeping') {
-               const hasSleeping = p.sleeping && p.sleeping.trim() && p.sleeping.trim().toLowerCase() !== 'nil' && p.sleeping.trim().toLowerCase() !== 'none';
-               html += `<td class="${baseClass}" ${styleStr}>${hasSleeping ? `<span class="text-indigo-700 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded inline-block whitespace-pre-wrap leading-tight">${p.sleeping}</span>` : `<span class="text-gray-400 italic">NONE</span>`}</td>`;
            } else if (c.id === 'otherPoints') {
                const hasNotes = p.otherPoints && p.otherPoints.trim() && p.otherPoints.trim().toLowerCase() !== 'nil' && p.otherPoints.trim().toLowerCase() !== 'none';
                html += `<td class="${baseClass}" ${styleStr}>${hasNotes ? `<span class="text-orange-700 dark:text-orange-400 font-medium whitespace-pre-wrap leading-tight">${p.otherPoints}</span>` : `<span class="text-gray-400 italic">NONE</span>`}</td>`;
+           } else if (c.id === 'sleeping') {
+               const hasSleeping = p.sleeping && p.sleeping.trim() && p.sleeping.trim().toLowerCase() !== 'nil' && p.sleeping.trim().toLowerCase() !== 'none';
+               html += `<td class="${baseClass}" ${styleStr}>${hasSleeping ? `<span class="text-indigo-700 dark:text-indigo-400 font-medium whitespace-pre-wrap leading-tight">${p.sleeping}</span>` : `<span class="text-gray-400 italic">NONE</span>`}</td>`;
            } else if (c.id === 'room') {
                html += `<td class="${baseClass} font-bold" ${styleStr}>${(p.room || 'UNASSIGNED').toUpperCase()}</td>`;
            } else if (c.id === 'bus') {
