@@ -200,6 +200,7 @@ case 'removeHelpline': result = modifyHelplineContacts(data.id, false); break;
 case 'addProjectGroup': result = modifyProjectGroups(data.groupName, true, data.callerNric, data.colorClass); break;
 case 'removeProjectGroup': result = modifyProjectGroups(data.groupName, false, data.callerNric); break;
 case 'modifyJunctures': result = modifyJunctures(data.actionType, data.oldName, data.newName); break;
+case 'modifyICJunctures': result = modifyICJunctures(data.actionType, data.oldName, data.newName, data.groupName); break;
 case 'saveSortingRules': result = saveSortingRules(data.rules, data.callerNric); break;
 case 'saveCustomViewsOrder': result = saveCustomViewsOrder(data.order, data.callerNric); break;
 case 'saveTripSettings': result = saveTripSettings(data.title, data.year, data.start, data.end); break;
@@ -219,7 +220,7 @@ case 'deleteDriveItem': result = deleteDriveItem(data.itemId, data.isFolder, dat
 case 'bulkDriveOperation': result = bulkDriveOperation(data.actionType, data.items, data.targetFolderId, data.singleNewName); break;
 case 'fetchLogistics': result = fetchLogistics(); break;
 case 'syncPairingUpdates': result = syncPairingUpdates(data.updates, data.takenBy || 'Admin'); break;
-case 'extractData': result = extractData(data.extractType, data.excludedNrics); break;
+case 'extractData': result = extractData(data.extractType, data.excludedNrics, data.customConfig); break;
 case 'fetchPairingsOnly': result = fetchPairingsOnly(); break;
 case 'syncRoomUpdates': result = syncRoomUpdates(data.updates, data.takenBy || 'Admin'); break;
 case 'syncAssignments': result = syncAssignments(data.updates, data.column); break;
@@ -386,7 +387,8 @@ data.forEach(row => {
          group: row.group, gender: row.gender, contact: row.contact, address: row.address, nationality: row.nationality,
          nric: row.nric, passportNo: row.passportNo, passportExpiry: expRaw || row.passportExpiry, dob: dobRaw || row.dob, diet: row.diet,
          emergencyName: row.emergencyName, emergencyContact: row.emergencyContact, emergencyRelation: row.emergencyRelation, sleeping: row.sleeping, otherPoints: row.otherPoints,
-         pocNric: row.pocNric, shortName: row.shortName, medical: row.medical
+         pocNric: row.pocNric, shortName: row.shortName, medical: row.medical,
+         logisticsGroup: row.logisticsGroup, bus: row.bus, isGroupIC: row.isGroupIC
      });
  }
 });
@@ -397,7 +399,9 @@ family.sort((a, b) => {
  return 0;
 });
 
-return { status: 'success', family: family };
+let groupMembers = []; let icJunctures = []; if (currentUserRecord.isGroupIC && currentUserRecord.logisticsGroup) { const myGrp = String(currentUserRecord.logisticsGroup).trim();
+ const props = PropertiesService.getScriptProperties();
+ icJunctures = JSON.parse(props.getProperty('IC_JUNCTURES_' + myGrp.replace(/\s+/g, '_').toUpperCase()) || '[]'); groupMembers = data.filter(r => String(r.logisticsGroup).trim() === myGrp).map(row => { let expRaw = row.passportExpiry; let dobRaw = row.dob; if (expRaw && typeof expRaw === 'string' && expRaw.includes('T')) { const d = new Date(expRaw); if(!isNaN(d.getTime())) expRaw = Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd MMM yyyy'); } if (dobRaw && typeof dobRaw === 'string' && dobRaw.includes('T')) { const d = new Date(dobRaw); if(!isNaN(d.getTime())) dobRaw = Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd MMM yyyy'); } return { role: row.role, fullName: row.fullName, shortName: row.shortName, nric: row.nric, contact: row.contact, emergencyName: row.emergencyName, emergencyContact: row.emergencyContact, emergencyRelation: row.emergencyRelation, diet: row.diet, medical: row.medical, otherPoints: row.otherPoints, logisticsGroup: row.logisticsGroup, bus: row.bus, isGroupIC: row.isGroupIC, pocNric: row.pocNric, group: row.group }; }); } return { status: 'success', family: family, groupMembers: groupMembers, logisticsGroup: currentUserRecord.logisticsGroup, isGroupIC: currentUserRecord.isGroupIC, icJunctures: icJunctures };
 }
 
 function updateProfile(member, isAdmin = false) {
@@ -597,7 +601,8 @@ results.push({
   shortName: String(data[i][22]||'').trim().toUpperCase(),
   medical: String(data[i][23]||'').trim(),
   bus: String(data[i][24]||'').trim(),
-  logisticsGroup: String(data[i][25]||'').trim()
+  logisticsGroup: String(data[i][25]||'').trim(),
+  isGroupIC: String(data[i][26]||'').trim().toLowerCase() === 'true'
 });
 }
 }
@@ -692,7 +697,8 @@ const participants = rosterData.map(p => ({
   emergencyRelation: p.emergencyRelation,
   diet: p.diet,
   medical: p.medical,
-  otherPoints: p.otherPoints
+  otherPoints: p.otherPoints,
+  isGroupIC: p.isGroupIC
 }));
 
 const pairRes = fetchPairingsOnly(forceRebuild);
@@ -1382,6 +1388,18 @@ else if (actionType === 'edit' && oldName && newName) { const idx = list.indexOf
 props.setProperty('ATTENDANCE_JUNCTURES', JSON.stringify(list)); return { status: 'success', junctures: list };
 }
 
+
+function modifyICJunctures(actionType, oldName, newName, groupName) {
+    const props = PropertiesService.getScriptProperties(); 
+    const key = 'IC_JUNCTURES_' + groupName.replace(/\s+/g, '_').toUpperCase();
+    let list = JSON.parse(props.getProperty(key) || '[]');
+    if (actionType === 'add' && newName && !list.includes(newName)) list.push(newName);
+    else if (actionType === 'remove' && oldName) list = list.filter(j => j !== oldName);
+    else if (actionType === 'edit' && oldName && newName) { const idx = list.indexOf(oldName); if (idx > -1) list[idx] = newName; }
+    props.setProperty(key, JSON.stringify(list)); 
+    return { status: 'success', icJunctures: list };
+}
+
 function saveSortingRules(rules, callerNric) { PropertiesService.getScriptProperties().setProperty('SORTING_RULES', JSON.stringify(rules)); return { status: 'success', sortingRules: rules }; }
 function saveCustomViewsOrder(order, callerNric) { PropertiesService.getScriptProperties().setProperty('CUSTOM_VIEWS_ORDER', JSON.stringify(order)); return { status: 'success', customViewsOrder: order }; }
 
@@ -1514,6 +1532,7 @@ let colIndex = 25;
 if (column === 'group') colIndex = 6;
 else if (column === 'bus') colIndex = 24;
 else if (column === 'logisticsGroup') colIndex = 25;
+else if (column === 'isGroupIC') colIndex = 26;
 let dataChanged = false;
 
 const targetLength = Math.max(data[0].length, colIndex + 1);
@@ -1618,12 +1637,57 @@ function clearGlobalCache() {
 // ==========================================
 // DATA EXTRACTION
 // ==========================================
-function extractData(extractType, excludedNrics) {
+function extractData(extractType, excludedNrics, customConfig) {
   try {
     const props = PropertiesService.getScriptProperties();
     const tripTitle = props.getProperty('TRIP_TITLE') || 'TOT';
     const tripYear = props.getProperty('TRIP_YEAR') || new Date().getFullYear();
     const rosterData = fetchAdminRoster(false).roster;
+    
+    // Enrich with logistics data (rooms & pairings)
+    try {
+      const logRes = fetchLogistics();
+      const roomsMap = {};
+      const pairingsMap = {};
+      
+      if (logRes && logRes.rooms) {
+        logRes.rooms.forEach(r => {
+          if (!r.isDeleted && r.occupants) {
+            r.occupants.forEach(n => roomsMap[n] = String(r.name).toUpperCase());
+          }
+        });
+      }
+      
+      if (logRes && logRes.pairings) {
+        logRes.pairings.filter(p => p.status === 'ACTIVE').forEach(pair => {
+          if(!pairingsMap[pair.traineeNric]) pairingsMap[pair.traineeNric] = [];
+          if(!pairingsMap[pair.volNric]) pairingsMap[pair.volNric] = [];
+          
+          const v = rosterData.find(x => x.nric === pair.volNric);
+          const t = rosterData.find(x => x.nric === pair.traineeNric);
+          
+          if(v) pairingsMap[pair.traineeNric].push(((v.shortName || v.fullName) || '').toUpperCase());
+          if(t) pairingsMap[pair.volNric].push(((t.shortName || t.fullName) || '').toUpperCase());
+        });
+      }
+      
+      rosterData.forEach(p => {
+        p.room = roomsMap[p.nric] || 'UNASSIGNED';
+        let myPairings = pairingsMap[p.nric] ? [...pairingsMap[p.nric]] : [];
+        if (p.role === 'CAREGIVER' && p.relatedTrainee) {
+            const rNames = p.relatedTrainee.split('|').map(n => n.trim().toLowerCase());
+            const relatedList = rosterData.filter(x => rNames.includes((x.fullName||'').toLowerCase()) && x.role === 'TRAINEE');
+            relatedList.forEach(related => {
+                if (related && pairingsMap[related.nric]) {
+                    myPairings.push(...pairingsMap[related.nric]);
+                }
+            });
+        }
+        p.pairings = myPairings.length > 0 ? Array.from(new Set(myPairings)).join(', ') : 'NONE';
+      });
+    } catch(e) {
+       // Silently fail enrichment if error
+    }
     
     // Sort array so that it's consistent.
     rosterData.sort((a,b) => String(a.fullName).localeCompare(String(b.fullName)));
@@ -1806,6 +1870,58 @@ function extractData(extractType, excludedNrics) {
           dataRange.setWrap(true).setVerticalAlignment("top").setHorizontalAlignment("left");
         }
       }
+      DriveApp.getFileById(fileId).moveTo(folder);
+    } else if (extractType === 'custom') {
+      const fileName = customConfig.sheetName || 'Custom Extraction';
+      const ss = SpreadsheetApp.create(fileName);
+      fileId = ss.getId();
+      const sheet = ss.getSheets()[0];
+      sheet.setName("Extraction");
+      
+      const colDefs = customConfig.columns || [];
+      const colLabels = {
+        fullName: 'Full Name', shortName: 'Short Name', nric: 'NRIC / FIN', email: 'Email Address', role: 'Role', gender: 'Gender', contact: 'Contact Number', address: 'Home Address', nationality: 'Nationality', passportNo: 'Passport No.', passportExpiry: 'Passport Expiry Date', dob: 'Date of Birth', diet: 'Dietary Restrictions', emergencyName: 'Emergency Contact Name', emergencyContact: 'Emergency Contact Number', emergencyRelation: 'Emergency Contact Relationship', sleeping: 'Sleeping Arrangement', otherPoints: 'Other Points to Note', medical: 'Medical Conditions', bus: 'Bus', logisticsGroup: 'Logistics Group', group: 'Project Group', relatedTrainee: 'Related Trainee(s)', relationship: 'Relationship to Trainee', room: 'Room Assignment', pairings: 'Pairings'
+      };
+      
+      const header = ["S/N"];
+      colDefs.forEach(c => header.push(colLabels[c] || c));
+      
+      const rows = [header];
+      
+      targetRoster.forEach((p, index) => {
+        const row = [index + 1];
+        colDefs.forEach(c => {
+          let val = p[c] || '';
+          if (c === 'dob' || c === 'passportExpiry') {
+            if (val) {
+              const d = new Date(val);
+              if (!isNaN(d.getTime())) val = Utilities.formatDate(d, Session.getScriptTimeZone(), "dd MMM yyyy");
+            }
+          }
+          row.push(val);
+        });
+        rows.push(row);
+      });
+      
+      const dataRange = sheet.getRange(1, 1, rows.length, rows[0].length);
+      dataRange.setValues(rows);
+      
+      sheet.setColumnWidth(1, 50);
+      for (let i = 0; i < colDefs.length; i++) {
+         const c = colDefs[i];
+         let w = 150;
+         if (['fullName', 'address', 'medical', 'otherPoints', 'relatedTrainee'].includes(c)) w = 250;
+         else if (['nric', 'dob', 'passportExpiry', 'gender', 'role', 'bus', 'room', 'shortName'].includes(c)) w = 120;
+         else if (['contact', 'emergencyContact'].includes(c)) w = 130;
+         sheet.setColumnWidth(i + 2, w);
+      }
+      
+      dataRange.setHorizontalAlignment("left");
+      dataRange.setVerticalAlignment("middle");
+      dataRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+      
+      sheet.getRange(1, 1, 1, rows[0].length).setFontWeight("bold");
+      
       DriveApp.getFileById(fileId).moveTo(folder);
     }
     
