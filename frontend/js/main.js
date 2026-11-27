@@ -1,0 +1,1809 @@
+document.addEventListener("DOMContentLoaded", () => {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (let r of regs) r.unregister();
+    });
+  }
+
+  const savedSession = localStorage.getItem("userSession");
+  if (savedSession) {
+    try {
+      currentUser = JSON.parse(savedSession);
+    } catch (e) {
+      localStorage.removeItem("userSession");
+      currentUser = null;
+    }
+  }
+
+  if (
+    localStorage.getItem("theme") === "dark" ||
+    (!localStorage.getItem("theme") &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches)
+  ) {
+    document.documentElement.classList.add("dark");
+    document.documentElement.classList.remove("light");
+  } else {
+    document.documentElement.classList.remove("dark");
+    document.documentElement.classList.add("light");
+  }
+
+  const devModeBar = document.getElementById("devModeBar");
+  if (devModeBar) {
+    if (ENV === "Dev") {
+      devModeBar.textContent = "Testing";
+      devModeBar.className =
+        "w-full bg-red-600 text-white text-center py-0.5 text-xs font-bold tracking-widest uppercase shrink-0 z-50";
+      devModeBar.classList.remove("hidden-force");
+    } else if (ENV === "Exp") {
+      devModeBar.textContent = "Experimentation";
+      devModeBar.className =
+        "w-full bg-purple-600 text-white text-center py-0.5 text-xs font-bold tracking-widest uppercase shrink-0 z-50";
+      devModeBar.classList.remove("hidden-force");
+    } else {
+      devModeBar.classList.add("hidden-force");
+    }
+  }
+
+  // Check Authentication boundaries (supports GitHub Pages subpaths like /repo-name/)
+  const path = window.location.pathname;
+  const isPublic =
+    path.endsWith("index.html") ||
+    path.endsWith("register.html") ||
+    path.endsWith("/") ||
+    path === "";
+  if (!currentUser && !isPublic) {
+    navigateTo("index.html");
+    return;
+  }
+  if (!currentUser && isPublic && localStorage.getItem("appSettings")) {
+    const viewLoading = document.getElementById("viewLoading");
+    if (viewLoading) viewLoading.classList.add("hidden-force");
+  }
+
+  if (currentUser) {
+    const deskUserName = document.getElementById("deskUserName");
+    const deskUserRole = document.getElementById("deskUserRole");
+    const roleStr =
+      currentUser.nric === "ADMIN"
+        ? "Main Admin"
+        : currentUser.role === "admin"
+          ? "Committee"
+          : "Participant";
+    if (deskUserName) deskUserName.textContent = currentUser.name || "User";
+    if (deskUserRole) deskUserRole.textContent = roleStr;
+
+    if (currentUser.role !== "admin") {
+      document
+        .querySelectorAll(".admin-only")
+        .forEach((el) => el.classList.add("hidden-force"));
+    }
+    if (currentUser.role === "admin") {
+      const navProfile = document.getElementById("nav-profile");
+      if (navProfile) navProfile.classList.add("hidden-force");
+    }
+  }
+
+  // Pillar 1 Sync Safety: Track mutational interactions
+  document.addEventListener("input", () => {
+    lastLocalChange = Date.now();
+  });
+  document.addEventListener("change", () => {
+    lastLocalChange = Date.now();
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.tagName === "BUTTON" || e.target.closest("button"))
+      lastLocalChange = Date.now();
+  });
+  document.addEventListener(
+    "scroll",
+    () => {
+      lastLocalChange = Date.now();
+    },
+    { capture: true, passive: true },
+  );
+
+  // Setup Long Press for Participant Quick View
+  setupGlobalLongPress();
+
+  silentHydration();
+});
+
+// ==========================================
+// GLOBAL LONG-PRESS PARTICIPANT VIEW
+// ==========================================
+let lpTimer;
+let lpActive = false;
+let lpStartX = 0;
+let lpStartY = 0;
+
+function setupGlobalLongPress() {
+  document.addEventListener("touchstart", handleLpStart, { passive: true });
+  document.addEventListener("mousedown", handleLpStart);
+  document.addEventListener("touchend", handleLpEnd);
+  document.addEventListener("mouseup", handleLpEnd);
+  document.addEventListener("touchmove", handleLpMove, { passive: true });
+  document.addEventListener("mousemove", handleLpMove);
+}
+
+function handleLpStart(e) {
+  if (e.button !== undefined && e.button !== 0) return; // Ignore right-clicks
+  const target = e.target.closest("[data-nric]");
+  if (!target) return;
+
+  const nric = target.dataset.nric;
+  if (!nric) return;
+
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  lpStartX = clientX;
+  lpStartY = clientY;
+
+  lpActive = true;
+  lpTimer = setTimeout(() => {
+    if (lpActive) {
+      lpActive = false;
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(50);
+        } catch (err) {}
+      }
+      showParticipantSummaryModal(nric);
+    }
+  }, 600);
+}
+
+function handleLpMove(e) {
+  if (!lpActive) return;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+  // Only cancel long press if finger/mouse moves more than 10 pixels (allows for slight jitters on mobile screens)
+  if (Math.abs(clientX - lpStartX) > 10 || Math.abs(clientY - lpStartY) > 10) {
+    handleLpEnd();
+  }
+}
+
+function handleLpEnd() {
+  lpActive = false;
+  clearTimeout(lpTimer);
+}
+
+async function showParticipantSummaryModal(nric) {
+  let modal = document.getElementById("globalParticipantModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "globalParticipantModal";
+    modal.className =
+      "fixed inset-0 bg-black/60 z-[110] flex justify-center items-center p-4 backdrop-blur-sm hidden-force overflow-y-auto";
+    modal.innerHTML = `
+      <div class="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-3xl shadow-2xl border-2 border-gray-200 dark:border-gray-700 animate-slide-up flex flex-col overflow-hidden my-auto">
+        <div class="flex justify-between items-center p-4 border-b-2 border-gray-200 dark:border-gray-700 shrink-0 bg-gray-50 dark:bg-gray-900/50">
+          <div class="flex items-center gap-2.5">
+            <h3 class="text-base font-black text-gray-900 dark:text-white flex items-center gap-2">
+              <svg class="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+              Profile
+            </h3>
+            <button 
+              id="gpmTripInfoBtn"
+              type="button" 
+              onclick="openTripInfoDoc()" 
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-full shadow-sm active:scale-95 transition-all cursor-pointer border border-emerald-500 shrink-0"
+              title="Open Trip Info Document"
+            >
+              <svg class="w-3.5 h-3.5 text-emerald-100 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              <span>Trip Info</span>
+            </button>
+          </div>
+          <button type="button" onclick="closeParticipantSummaryModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl font-bold px-1 focus:outline-none">&times;</button>
+        </div>
+        <div id="gpm-content" class="p-5 flex flex-col gap-4 max-h-[80vh] overflow-y-auto custom-scrollbar">
+          <div class="flex justify-center py-6"><div class="loader !w-8 !h-8 border-primary"></div></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeParticipantSummaryModal();
+    });
+  }
+
+  const hasTripInfoDoc = Boolean(
+    (typeof appSettings !== "undefined" && (appSettings.tripInfoDocId || appSettings.tripInfoDocUrl)) ||
+    (() => {
+      try {
+        const stored = localStorage.getItem("appSettings");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          return Boolean(parsed.tripInfoDocId || parsed.tripInfoDocUrl);
+        }
+      } catch (e) {}
+      return false;
+    })()
+  );
+  const gpmBtn = document.getElementById("gpmTripInfoBtn");
+  if (gpmBtn) gpmBtn.classList.toggle("hidden-force", !hasTripInfoDoc);
+
+  modal.classList.remove("hidden-force");
+  const cont = document.getElementById("gpm-content");
+  if (cont)
+    cont.innerHTML = `<div class="flex justify-center py-6"><div class="loader !w-8 !h-8 border-primary"></div></div>`;
+
+  try {
+    let m = null;
+    let familyArr = [];
+    if (typeof adminRosterData !== "undefined" && adminRosterData.length > 0) {
+      m = adminRosterData.find(
+        (f) => f.nric.toUpperCase() === nric.toUpperCase(),
+      );
+    } else if (typeof loadedFamily !== "undefined" && loadedFamily.length > 0) {
+      m = loadedFamily.find((f) => f.nric.toUpperCase() === nric.toUpperCase());
+    }
+
+    if (!m) {
+      const res = await apiCall("getProfile", { nric: nric });
+      if (res.status === "error") throw new Error(res.message);
+      if (res.family) {
+        m = res.family.find((f) => f.nric.toUpperCase() === nric.toUpperCase());
+        if (m) {
+          familyArr = res.family.filter((f) => f !== m);
+        }
+      }
+    }
+
+    if (!m) throw new Error("Participant not found");
+
+    if (m && familyArr.length === 0) {
+      let sourceArr = [];
+      if (typeof adminRosterData !== "undefined" && adminRosterData.length > 0)
+        sourceArr = adminRosterData;
+      else if (typeof loadedFamily !== "undefined" && loadedFamily.length > 0)
+        sourceArr = loadedFamily;
+
+      familyArr = window.getFamilyMembers
+        ? window.getFamilyMembers(m.nric, sourceArr).filter((f) => f !== m)
+        : [];
+    }
+
+    const esc = typeof window.escapeHtml === "function" ? window.escapeHtml : (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    const escJs = typeof window.escapeJsAttr === "function" ? window.escapeJsAttr : (s) => esc(String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+
+    let groupOpts = `<option value="">Select...</option>`;
+    if (appSettings.projectGroups) {
+      appSettings.projectGroups.forEach((g) => {
+        groupOpts += `<option value="${esc(g)}" ${m.group === g ? "selected" : ""}>${esc(g)}</option>`;
+      });
+    }
+    if (
+      m.group &&
+      (!appSettings.projectGroups ||
+        !appSettings.projectGroups.includes(m.group))
+    ) {
+      groupOpts += `<option value="${esc(m.group)}" selected>${esc(m.group)} (Archived)</option>`;
+    }
+    const dynColor = getProjectColor(m.group);
+
+    let familyHtml = "";
+    if (familyArr.length > 0) {
+      familyHtml = `
+        <div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-3 mt-1">
+            <p class="font-bold text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider mb-2">Family Members</p>
+            <div class="flex flex-col gap-2">
+                ${familyArr
+                  .map((f) => {
+                    const fRoleColor =
+                      f.role === "TRAINEE"
+                        ? "text-green-600 dark:text-green-400"
+                        : f.role === "CAREGIVER"
+                          ? "text-purple-600 dark:text-purple-400"
+                          : "text-orange-600 dark:text-orange-400";
+                    return `<div class="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 dark:bg-gray-800/50 p-2 rounded border-2 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 transition cursor-pointer" onclick="showParticipantSummaryModal('${escJs(f.nric)}')">
+                         <div class="flex items-center gap-2 mb-1 md:mb-0">
+                            <span class="text-[10px] font-black ${fRoleColor} bg-white dark:bg-gray-900 px-1.5 py-0.5 rounded border-2 border-gray-200 dark:border-gray-700 uppercase tracking-wider shrink-0">${esc(String(f.role || "").substring(0, 3))}</span>
+                            <span class="font-bold text-xs text-gray-800 dark:text-gray-200">${esc(f.fullName || f.name || "Unknown")}${f.shortName ? " (" + esc(f.shortName) + ")" : ""}</span>
+                         </div>
+                         <div class="text-sm font-mono text-gray-600 dark:text-gray-400 font-semibold bg-white dark:bg-gray-900 px-2 py-0.5 rounded border-2 border-gray-200 dark:border-gray-700">
+                            ${renderPhoneLink(f.contact)}
+                         </div>
+                     </div>`;
+                  })
+                  .join("")}
+            </div>
+        </div>`;
+    }
+
+    const mRoleColor =
+      m.role === "TRAINEE"
+        ? "text-green-600 dark:text-green-400"
+        : m.role === "CAREGIVER"
+          ? "text-purple-600 dark:text-purple-400"
+          : "text-orange-600 dark:text-orange-400";
+
+    let logRoom = "None";
+    let logGroup = m.logisticsGroup || "None";
+    let logBus = m.bus || "None";
+    let logPairing = "None";
+
+    try {
+      const logistics =
+        typeof globalLogistics !== "undefined" && globalLogistics
+          ? globalLogistics
+          : await apiCall("fetchLogistics").catch((e) => null);
+      if (logistics) {
+        window.globalLogistics = logistics;
+        if (typeof globalLogistics !== "undefined") {
+          globalLogistics = logistics;
+        }
+      }
+      if (logistics && logistics.participants) {
+        const lp = logistics.participants.find(
+          (p) => p.nric.toUpperCase() === m.nric.toUpperCase(),
+        );
+        if (lp) {
+          logGroup = lp.logisticsGroup || "None";
+          logBus = lp.bus || "None";
+          if (logistics.rooms) {
+            const r = logistics.rooms.find(
+              (r) => r.occupants && r.occupants.includes(lp.nric),
+            );
+            if (r) logRoom = r.name;
+          }
+          if (logistics.pairings) {
+            if (lp.role === "TRAINEE") {
+              const pair = logistics.pairings.find(
+                (p) => p.traineeNric === lp.nric && p.status === "ACTIVE",
+              );
+              if (pair) {
+                const vp = logistics.participants.find(
+                  (x) => x.nric === pair.volNric,
+                );
+                if (vp)
+                  logPairing = vp.shortName || vp.fullName || pair.volNric;
+              }
+            } else if (lp.role === "CAREGIVER") {
+              const traineeNrics = familyArr
+                .filter((f) => f.role === "TRAINEE")
+                .map((f) => f.nric.toUpperCase());
+              if (traineeNrics.length > 0) {
+                const pairs = logistics.pairings.filter(
+                  (p) =>
+                    traineeNrics.includes(p.traineeNric.toUpperCase()) &&
+                    p.status === "ACTIVE",
+                );
+                if (pairs.length > 0) {
+                  logPairing = pairs
+                    .map((pair) => {
+                      const vp = logistics.participants.find(
+                        (x) =>
+                          x.nric.toUpperCase() === pair.volNric.toUpperCase(),
+                      );
+                      if (vp) {
+                        const vpName =
+                          vp.shortName || vp.fullName || pair.volNric;
+                        const tp = logistics.participants.find(
+                          (x) =>
+                            x.nric.toUpperCase() ===
+                            pair.traineeNric.toUpperCase(),
+                        );
+                        const tpName = tp
+                          ? tp.shortName || tp.fullName
+                          : pair.traineeNric;
+                        const contactHtml =
+                          vp.contact && typeof renderPhoneLink === "function"
+                            ? renderPhoneLink(vp.contact)
+                            : vp.contact || "No contact";
+                        return `<div class="flex flex-col mt-1.5 p-2 bg-gray-50 dark:bg-gray-800 rounded border-2 border-gray-200 dark:border-gray-700">
+                                            <span class="font-bold text-xs text-purple-600 dark:text-purple-400 leading-tight">${vpName} <span class="text-gray-500 dark:text-gray-400 font-medium text-[10px]">(for ${tpName})</span></span>
+                                            <div class="text-xs font-mono font-medium mt-1 text-gray-700 dark:text-gray-300">${contactHtml}</div>
+                                        </div>`;
+                      }
+                      return pair.volNric;
+                    })
+                    .join("");
+                }
+              }
+            } else {
+              const pairs = logistics.pairings.filter(
+                (p) => p.volNric === lp.nric && p.status === "ACTIVE",
+              );
+              if (pairs.length > 0) {
+                logPairing = pairs
+                  .map((pair) => {
+                    const tp = logistics.participants.find(
+                      (x) => x.nric === pair.traineeNric,
+                    );
+                    return tp ? tp.shortName || tp.fullName : pair.traineeNric;
+                  })
+                  .join(", ");
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {}
+
+    window._currentModalParticipant = m;
+
+    if (cont)
+      cont.innerHTML = `
+      <div id="gpm-view">
+        <div class="flex justify-between items-start border-b-2 border-gray-100 dark:border-gray-800 pb-2 mb-3">
+          <div class="flex items-center flex-wrap gap-1.5">
+            <span class="font-extrabold text-[13px] md:text-sm px-2 py-0.5 rounded shadow-md border ${dynColor} leading-tight">${esc(m.fullName)}</span> 
+            <span class="text-xs font-black ${mRoleColor} bg-gray-50 dark:bg-gray-800 px-1 py-[1px] leading-tight rounded-sm border-2 border-gray-200 dark:border-gray-700 uppercase tracking-wide">${esc(m.role)}</span>
+          </div>
+          <div class="flex gap-2">
+            ${
+              typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()
+                ? `<span class="text-[11px] font-bold px-2 py-1 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">Read-Only</span>`
+                : `<button onclick="document.getElementById('gpm-view').classList.add('hidden-force'); document.getElementById('gpm-edit').classList.remove('hidden-force'); if(typeof setupNationalityDropdown === 'function') setupNationalityDropdown('gpmNat');" class="text-primary dark:text-green-400 text-xs font-bold hover:bg-green-50 dark:hover:bg-gray-800 px-2 py-1 rounded transition focus:outline-none border border-transparent hover:border-green-200 dark:hover:border-gray-700 shadow-md">Edit</button>
+            <button onclick="deleteParticipant('${escJs(m.nric)}')" class="text-red-600 dark:text-red-400 text-xs font-bold bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 px-2 py-1 rounded transition focus:outline-none border border-red-200 dark:border-red-900/50 shadow-md">Delete</button>`
+            }
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-3 text-sm text-gray-800 dark:text-gray-200">
+          <div><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Short Name</p><p class="font-semibold">${esc(m.shortName || "-")}</p></div>
+          <div class="border-t-2 md:border-t-0 border-gray-100 dark:border-gray-800 pt-2 md:pt-0">
+             <p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Pairing</p>
+             ${m.role === "CAREGIVER" && logPairing !== "None" ? `<div class="w-full">${logPairing}</div>` : `<p class="font-black text-lg text-purple-600 dark:text-purple-400 truncate w-full" title="${esc(logPairing)}">${esc(logPairing)}</p>`}
+          </div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Room</p>${logRoom && logRoom !== "None" ? `<button type="button" onclick="if(window.showRoomOccupantsModal) window.showRoomOccupantsModal('${escJs(m.nric)}', '${escJs(logRoom)}')" class="font-black text-lg text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1.5 text-left cursor-pointer focus:outline-none" title="Tap to see who is in ${esc(logRoom)}"><span class="truncate">${esc(logRoom)}</span><span class="text-sm">👥</span></button>` : `<p class="font-black text-lg text-blue-600 dark:text-blue-400 truncate w-full" title="${esc(logRoom)}">${esc(logRoom)}</p>`}</div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Group</p><p class="font-black text-lg text-amber-600 dark:text-amber-400 truncate w-full" title="${esc(logGroup)}">${esc(logGroup)}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Bus</p><p class="font-black text-lg text-teal-600 dark:text-teal-400 truncate w-full" title="${esc(logBus)}">${esc(logBus)}</p></div>
+          
+          <div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Dietary Needs</p><p class="font-bold text-red-600 dark:text-red-400">${esc(m.diet || "None")}</p></div>
+          ${m.role === "TRAINEE" ? `<div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Medical Conditions and Medications to take note of</p><p class="font-bold text-red-600 dark:text-red-400">${esc(m.medical || "None")}</p></div>` : ""}
+          <div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Contact & Email</p><div class="font-semibold flex flex-col gap-0.5"><span>${renderPhoneLink(m.contact)}</span><span class="text-gray-600 dark:text-gray-400 font-medium truncate w-full" title="${esc(m.email || "N/A")}">${esc(m.email || "N/A")}</span></div></div>
+
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">NRIC / FIN</p><p class="font-semibold uppercase">${esc(m.nric)}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Date of Birth</p><p class="font-semibold">${esc(formatDDMmmYYYY(m.dob))}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Gender & Nat.</p><p class="font-semibold">${esc(m.gender)} | ${esc(m.nationality)}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-1">Project</p><span class="font-bold text-xs px-1.5 py-0.5 rounded border inline-block shadow-md ${dynColor}">${esc(m.group || "None")}</span></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Home Address</p><p class="font-semibold">${esc(m.address || "-")}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Passport No.</p><p class="font-semibold uppercase">${esc(m.passportNo || "-")}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Passport Expiry</p><p class="font-semibold">${esc(m.passportExpiry ? formatDDMmmYYYY(m.passportExpiry) : "-")}</p></div>
+          <div class="border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Emerg. Contact</p><div class="font-semibold flex items-center gap-1">${esc(m.emergencyName || "")} (${esc(m.emergencyRelation || "")}) - <span class="font-mono">${renderPhoneLink(m.emergencyContact)}</span></div></div>
+          
+          <div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Sleeping Arrangement Request</p><p class="font-semibold text-green-600 dark:text-green-400">${esc(m.sleeping || "No special request")}</p></div>
+          <div class="md:col-span-2 border-t-2 border-gray-100 dark:border-gray-800 pt-2"><p class="font-bold text-gray-400 dark:text-gray-500 text-xs uppercase tracking-wider mb-0.5">Other Points to Note</p><p class="font-semibold">${esc(m.otherPoints || "None")}</p></div>
+          ${familyHtml}
+        </div>
+      </div>
+      
+      <form id="gpm-edit" onsubmit="event.preventDefault(); submitAdminProfileEdit(this.querySelector('button[type=submit]'));" class="hidden-force space-y-3">
+        <h4 class="font-black text-sm mb-1 border-b-2 border-gray-100 dark:border-gray-800 pb-1.5 text-gray-900 dark:text-white tracking-tight">Edit Details (Admin)</h4>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Full Name</label><input type="text" id="gpmName" value="${esc(m.fullName || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Short Name</label><input type="text" id="gpmShortName" value="${esc(m.shortName || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Email</label><input type="text" id="gpmEmail" value="${esc(m.email || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Contact</label><input type="text" id="gpmContact" value="${esc(m.contact || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Role</label><select id="gpmRole" onchange="document.getElementById('gpmRelated').closest('.relative').className = this.value === 'CAREGIVER' ? 'block relative' : 'hidden-force relative'; document.getElementById('gpmRelation').parentElement.className = this.value === 'CAREGIVER' ? 'block' : 'hidden-force'; document.getElementById('gpmMedical').parentElement.className = this.value === 'TRAINEE' ? 'md:col-span-2' : 'hidden-force';" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"><option ${m.role === "TRAINEE" ? "selected" : ""}>TRAINEE</option><option ${m.role === "CAREGIVER" ? "selected" : ""}>CAREGIVER</option><option ${m.role === "VOLUNTEER" ? "selected" : ""}>VOLUNTEER</option></select></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Gender</label><select id="gpmGender" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"><option ${m.gender === "Male" ? "selected" : ""}>Male</option><option ${m.gender === "Female" ? "selected" : ""}>Female</option></select></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Project</label><select id="gpmGroup" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white">${groupOpts}</select></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Date of Birth</label><input type="text" id="gpmDob" value="${esc(formatDDMmmYYYY(m.dob))}" readonly onclick="openDatePicker('gpmDob', 'dob')" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs text-center font-semibold cursor-pointer bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-md" placeholder="DD Mmm YYYY"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Nationality</label><input type="text" id="gpmNat" value="${esc(m.nationality || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Passport No</label><input type="text" id="gpmPass" value="${esc(m.passportNo || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white uppercase"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Passport Expiry</label><input type="text" id="gpmExp" value="${esc(m.passportExpiry ? formatDDMmmYYYY(m.passportExpiry) : "")}" readonly onclick="openDatePicker('gpmExp', 'exp')" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs text-center font-semibold cursor-pointer bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-md" placeholder="DD Mmm YYYY"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Dietary</label><input type="text" id="gpmDiet" value="${esc(m.diet || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div class="md:col-span-2"><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Home Address</label><textarea id="gpmAddress" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white" rows="2">${esc(m.address || "")}</textarea></div>
+          <div class="md:col-span-2"><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Other Points</label><textarea id="gpmOther" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white" rows="2">${esc(m.otherPoints || "")}</textarea></div>
+<div class="${m.role === "TRAINEE" ? "md:col-span-2" : "hidden-force"}"><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Medical Conditions</label><textarea id="gpmMedical" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white" rows="2">${esc(m.medical || "")}</textarea></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Emerg. Name</label><input type="text" id="gpmEmName" value="${esc(m.emergencyName || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Emerg. Contact</label><input type="text" id="gpmEmContact" value="${esc(m.emergencyContact || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Emerg. Relation</label><input type="text" id="gpmEmRel" value="${esc(m.emergencyRelation || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Sleeping Arrangement Request</label><input type="text" id="gpmSleep" value="${esc(m.sleeping || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+          <div class="${m.role === "CAREGIVER" ? "block" : "hidden-force"} relative"><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Related Trainees' Name(s)</label><input type="text" id="gpmRelated" placeholder="Search trainee..." value="${esc(m.relatedTrainee || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary shadow-md"></div>
+          <div class="${m.role === "CAREGIVER" ? "block" : "hidden-force"}"><label class="text-xs font-bold mb-0.5 text-gray-500 block uppercase">Relationship to Trainee(s)</label><input type="text" id="gpmRelation" value="${esc(m.relationship || "")}" class="w-full p-2 border-2 border-gray-300 dark:border-gray-700 rounded-lg text-xs font-semibold bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white"></div>
+        </div>
+        <div class="flex justify-end gap-2 mt-4 pt-4 border-t-2 border-gray-100 dark:border-gray-800">
+          <button type="button" onclick="document.getElementById('gpm-edit').classList.add('hidden-force'); document.getElementById('gpm-view').classList.remove('hidden-force');" class="px-4 py-2 text-xs font-bold text-gray-500 bg-gray-100 dark:bg-gray-800 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition">Cancel</button>
+          <button type="submit" class="px-4 py-2 text-xs font-bold text-white bg-primary rounded-lg hover:bg-green-600 transition shadow-md flex items-center">
+             <span class="btn-text">Save Changes</span>
+             <div class="btn-spinner spinner-white hidden-force ml-2 !w-3 !h-3"></div>
+          </button>
+        </div>
+      </form>
+    `;
+  } catch (e) {
+    if (cont)
+      cont.innerHTML = `<p class="text-xs font-bold text-red-500 text-center py-4">${(typeof window.escapeHtml === "function" ? window.escapeHtml : (s) => String(s || ""))(e.message || "Failed to load details.")}</p>`;
+  }
+
+  if (typeof setupTokenInput === "function") {
+    setTimeout(() => {
+      if (document.getElementById("gpmRelated")) {
+        setupTokenInput("gpmRelated", function (query) {
+          let allP = [];
+          if (
+            typeof adminRosterData !== "undefined" &&
+            adminRosterData.length > 0
+          ) {
+            allP = adminRosterData;
+          } else if (
+            typeof loadedFamily !== "undefined" &&
+            loadedFamily.length > 0
+          ) {
+            allP = loadedFamily;
+          }
+          const trainees = allP.filter((p) => p.role === "TRAINEE");
+          const results = trainees.filter(
+            (t) =>
+              (t.fullName || "").toLowerCase().includes(query) ||
+              (t.shortName || "").toLowerCase().includes(query),
+          );
+          return results.map((t) => {
+            const formatted = `${t.fullName}${t.shortName ? " (" + t.shortName + ")" : ""}`;
+            return { label: formatted, value: formatted };
+          });
+        });
+      }
+    }, 50);
+  }
+}
+
+async function submitAdminProfileEdit(btn) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
+    showToast("Read-only mode: archived trips cannot be modified.", true);
+    return;
+  }
+  if (!window._currentModalParticipant) return;
+  setBtnLoading(btn, true);
+  try {
+    const p = window._currentModalParticipant;
+    const roleVal = document.getElementById("gpmRole").value;
+    const relatedVal = document.getElementById("gpmRelated")
+      ? document.getElementById("gpmRelated").value.trim()
+      : "";
+
+    if (roleVal === "CAREGIVER" && relatedVal) {
+      let allP = [];
+      if (typeof adminRosterData !== "undefined" && adminRosterData.length > 0)
+        allP = adminRosterData;
+      else if (typeof loadedFamily !== "undefined" && loadedFamily.length > 0)
+        allP = loadedFamily;
+
+      const names = relatedVal
+        .split("|")
+        .map((x) => x.trim())
+        .filter((x) => x !== "");
+      let allValid = true;
+      names.forEach((n) => {
+        const cleanN = n
+          .replace(/\([^)]*\)/g, "")
+          .trim()
+          .toLowerCase();
+        const match = allP.find(
+          (x) =>
+            x.role === "TRAINEE" && (x.fullName || "").toLowerCase() === cleanN,
+        );
+        if (!match) allValid = false;
+      });
+
+      if (!allValid) {
+        showToast(
+          "Related Trainees' Name(s) field must match exactly with an existing Trainees' Full Names.",
+          true,
+        );
+        setBtnLoading(btn, false);
+        return;
+      }
+    }
+    const upd = {
+      nric: p.nric,
+      fullName: document.getElementById("gpmName").value,
+      shortName: document.getElementById("gpmShortName").value,
+      email: document.getElementById("gpmEmail").value,
+      contact: document.getElementById("gpmContact").value,
+      role: document.getElementById("gpmRole").value,
+      gender: document.getElementById("gpmGender").value,
+      group: document.getElementById("gpmGroup").value,
+      dob: document.getElementById("gpmDob").value,
+      nationality: document.getElementById("gpmNat").value,
+      passportNo: document.getElementById("gpmPass").value.toUpperCase(),
+      passportExpiry: document.getElementById("gpmExp").value,
+      diet: document.getElementById("gpmDiet").value,
+      address: document.getElementById("gpmAddress").value,
+      medical: document.getElementById("gpmMedical").value,
+      emergencyName: document.getElementById("gpmEmName").value,
+      emergencyContact: document.getElementById("gpmEmContact").value,
+      emergencyRelation: document.getElementById("gpmEmRel").value,
+      sleeping: document.getElementById("gpmSleep").value,
+      otherPoints: document.getElementById("gpmOther").value,
+      relatedTrainee: document.getElementById("gpmRelated")
+        ? document.getElementById("gpmRelated").value
+        : "",
+      relationship: document.getElementById("gpmRelation")
+        ? document.getElementById("gpmRelation").value
+        : "",
+    };
+
+    const res = await apiCall("adminUpdateParticipant", { member: upd });
+    if (res.status === "success") {
+      showToast("Participant updated successfully.");
+      closeParticipantSummaryModal();
+      setTimeout(() => window.location.reload(), 800);
+    } else {
+      throw new Error(res.message || "Update failed");
+    }
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    setBtnLoading(btn, false);
+  }
+}
+
+async function deleteParticipant(nric) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
+    showToast("Read-only mode: archived trips cannot be modified.", true);
+    return;
+  }
+  if (
+    !(await appConfirm(
+      "Are you sure you want to delete this participant? They will be moved to the Archived Participants tab.",
+      "Delete Participant",
+      "Delete",
+      "Cancel",
+      true,
+    ))
+  )
+    return;
+  const btn = document.querySelector("#gpm-view button.text-red-600");
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await apiCall("deleteParticipant", { nric });
+    if (res.status === "success") {
+      showToast("Participant deleted & archived.");
+      closeParticipantSummaryModal();
+      if (typeof loadParticipantsData === "function") loadParticipantsData();
+    } else {
+      throw new Error(res.message || "Delete failed");
+    }
+  } catch (e) {
+    showToast(e.message, true);
+    if (btn) btn.disabled = false;
+  }
+}
+
+window.closeParticipantSummaryModal = function () {
+  const m = document.getElementById("globalParticipantModal");
+  if (m) m.classList.add("hidden-force");
+  window._currentModalParticipant = null;
+};
+
+// ==========================================
+// GLOBAL ROOM OCCUPANTS MODAL
+// ==========================================
+window.showRoomOccupantsModal = async function (nric, fallbackRoomName) {
+  const existingModal = document.getElementById("roomOccupantsModal");
+  if (existingModal) existingModal.remove();
+
+  if (!globalLogistics || !globalLogistics.rooms || !globalLogistics.participants) {
+    if (typeof apiCall === "function") {
+      try {
+        const res = await apiCall("fetchLogistics");
+        if (res && res.status === "success") {
+          globalLogistics = res;
+          window.globalLogistics = res;
+        }
+      } catch (e) {
+        console.warn("fetchLogistics failed in showRoomOccupantsModal:", e);
+      }
+    }
+  }
+
+  if (!globalLogistics || !globalLogistics.rooms || !globalLogistics.participants) {
+    if (typeof showToast === "function") {
+      showToast("Unable to load room details at this time.", true);
+    } else {
+      alert("Unable to load room details at this time.");
+    }
+    return;
+  }
+
+  if (typeof window.applyCaregiverLabels === "function") {
+    window.applyCaregiverLabels(globalLogistics.participants);
+  }
+
+  const cleanNric = String(nric || "").trim().toUpperCase();
+
+  let room = globalLogistics.rooms.find(
+    (r) =>
+      !r.isDeleted &&
+      r.occupants &&
+      r.occupants.some((occ) => String(occ).trim().toUpperCase() === cleanNric)
+  );
+
+  if (!room && fallbackRoomName && fallbackRoomName !== "None") {
+    const cleanRoomName = String(fallbackRoomName).trim().toUpperCase();
+    room = globalLogistics.rooms.find(
+      (r) =>
+        !r.isDeleted &&
+        (String(r.name).trim().toUpperCase() === cleanRoomName ||
+          String(r.id).trim().toUpperCase() === cleanRoomName)
+    );
+  }
+
+  if (!room) {
+    const participant = globalLogistics.participants.find(
+      (p) => String(p.nric).trim().toUpperCase() === cleanNric
+    );
+    const assigned = participant
+      ? participant.roomAllocated || participant.room
+      : null;
+    if (assigned && assigned !== "None") {
+      const cleanAssigned = String(assigned).trim().toUpperCase();
+      room = globalLogistics.rooms.find(
+        (r) =>
+          !r.isDeleted &&
+          (String(r.name).trim().toUpperCase() === cleanAssigned ||
+            String(r.id).trim().toUpperCase() === cleanAssigned)
+      );
+    }
+  }
+
+  if (!room) {
+    if (typeof showToast === "function") {
+      showToast("No room assigned yet.", true);
+    } else {
+      alert("No room assigned yet.");
+    }
+    return;
+  }
+
+  const getCaregiverTraineeShortName = (occ) => {
+    if (occ.caregiverFor) return occ.caregiverFor;
+    if (occ.relatedTrainee) {
+      let parts = String(occ.relatedTrainee).split("|").filter(Boolean);
+      let mapped = parts.map((n) => {
+        let raw = n.trim();
+        const match = raw.match(/\((.*?)\)/);
+        if (match && match[1]) return match[1].trim();
+        const tr = globalLogistics.participants.find(
+          (t) =>
+            t.role === "TRAINEE" &&
+            (String(t.fullName || t.name || "").toLowerCase() === raw.toLowerCase() ||
+              String(t.shortName || "").toLowerCase() === raw.toLowerCase())
+        );
+        if (tr && tr.shortName) return tr.shortName;
+        return raw.replace(/\s*\(.*?\)\s*/g, "").trim();
+      });
+      return mapped.join(", ");
+    }
+    const myPoc = occ.pocNric || occ.nric;
+    const trainees = globalLogistics.participants.filter(
+      (t) => t.role === "TRAINEE" && (t.pocNric || t.nric) === myPoc
+    );
+    if (trainees.length > 0) {
+      return trainees.map((t) => t.shortName || t.fullName || t.name).join(", ");
+    }
+    return "";
+  };
+
+  let occupantNrics = room.occupants ? [...room.occupants] : [];
+  if (
+    cleanNric &&
+    !occupantNrics.some((occ) => String(occ).trim().toUpperCase() === cleanNric)
+  ) {
+    const p = globalLogistics.participants.find(
+      (x) => String(x.nric).trim().toUpperCase() === cleanNric
+    );
+    if (
+      p &&
+      (p.roomAllocated === room.name ||
+        p.room === room.name ||
+        (fallbackRoomName &&
+          (fallbackRoomName === room.name || fallbackRoomName === room.id)))
+    ) {
+      occupantNrics.push(cleanNric);
+    }
+  }
+
+  const occupants = occupantNrics.map((occNric) => {
+    const raw = String(occNric).trim().toUpperCase();
+    const p = globalLogistics.participants.find(
+      (x) => String(x.nric).trim().toUpperCase() === raw
+    );
+    if (p) return p;
+    if (typeof loadedFamily !== "undefined" && Array.isArray(loadedFamily)) {
+      const fam = loadedFamily.find((x) => String(x.nric).trim().toUpperCase() === raw);
+      if (fam) return fam;
+    }
+    if (
+      typeof currentUser !== "undefined" &&
+      currentUser &&
+      String(currentUser.nric).trim().toUpperCase() === raw
+    ) {
+      return currentUser;
+    }
+    return {
+      nric: raw,
+      fullName: raw,
+      name: raw,
+      shortName: raw,
+      role: "UNKNOWN",
+    };
+  });
+
+  occupants.sort((a, b) => {
+    const aIsCurrent = String(a.nric).trim().toUpperCase() === cleanNric;
+    const bIsCurrent = String(b.nric).trim().toUpperCase() === cleanNric;
+    if (aIsCurrent && !bIsCurrent) return -1;
+    if (!aIsCurrent && bIsCurrent) return 1;
+
+    const roleOrder = { TRAINEE: 1, CAREGIVER: 2, VOLUNTEER: 3 };
+    const rA = roleOrder[String(a.role || "").toUpperCase()] || 4;
+    const rB = roleOrder[String(b.role || "").toUpperCase()] || 4;
+    if (rA !== rB) return rA - rB;
+
+    return String(a.shortName || a.fullName || a.name || "").localeCompare(
+      String(b.shortName || b.fullName || b.name || "")
+    );
+  });
+
+  const roleMap = {
+    VOLUNTEER: "vol",
+    CAREGIVER: "car",
+    TRAINEE: "trn",
+  };
+
+  const escRm = typeof window.escapeHtml === "function" ? window.escapeHtml : (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const occupantsListHtml = occupants
+    .map((occ) => {
+      const isViewer =
+        currentUser &&
+        String(occ.nric).trim().toUpperCase() ===
+          String(currentUser.nric).trim().toUpperCase();
+      const isTarget = String(occ.nric).trim().toUpperCase() === cleanNric;
+      const isTraineeOfVol = isTarget && !isViewer;
+
+      const roleUpper = String(occ.role || "").toUpperCase();
+      const rTag = roleMap[roleUpper] || roleUpper.substring(0, 3).toLowerCase();
+
+      const rBadgeColor =
+        roleUpper === "TRAINEE"
+          ? "text-green-700 dark:text-green-300 bg-green-100 dark:bg-green-950/60 border-green-300 dark:border-green-800"
+          : roleUpper === "CAREGIVER"
+            ? "text-purple-700 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 border-purple-300 dark:border-purple-800"
+            : "text-orange-700 dark:text-orange-300 bg-orange-100 dark:orange-950/60 border-orange-300 dark:border-orange-800";
+
+      const avatarBg =
+        roleUpper === "TRAINEE"
+          ? "bg-green-100 text-green-700 dark:bg-green-900/60 dark:text-green-300 border border-green-200 dark:border-green-800"
+          : roleUpper === "CAREGIVER"
+            ? "bg-purple-100 text-purple-700 dark:bg-purple-900/60 dark:text-purple-300 border border-purple-200 dark:border-purple-800"
+            : "bg-orange-100 text-orange-700 dark:bg-orange-900/60 dark:text-orange-300 border border-orange-200 dark:border-orange-800";
+
+      const shortName = occ.shortName || occ.name || occ.fullName || occ.nric;
+      const fullName = occ.fullName || occ.name || "";
+      const initials = (shortName || "?").substring(0, 2).toUpperCase();
+
+      let caregiverTraineeHtml = "";
+      if (roleUpper === "CAREGIVER") {
+        const traineeShortName = getCaregiverTraineeShortName(occ);
+        if (traineeShortName) {
+          caregiverTraineeHtml = `<span class="font-bold text-purple-600 dark:text-purple-400 text-xs md:text-sm leading-none">[${escRm(traineeShortName.toUpperCase())}]</span>`;
+        }
+      }
+
+      const contactHtml =
+        occ.contact && typeof window.renderPhoneLink === "function"
+          ? window.renderPhoneLink(occ.contact)
+          : escRm(occ.contact || "");
+
+      return `
+        <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/80 border border-gray-200 dark:border-gray-700/80 transition-colors ${
+          isViewer ? "ring-2 ring-blue-500/40 bg-blue-50/20 dark:bg-blue-950/20" : isTraineeOfVol ? "ring-2 ring-emerald-500/40 bg-emerald-50/20 dark:bg-emerald-950/20" : ""
+        }">
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            <div class="w-8 h-8 rounded-full flex items-center justify-center font-black text-xs shrink-0 shadow-xs ${avatarBg}">
+              ${escRm(initials)}
+            </div>
+            <div class="min-w-0 flex flex-col gap-0.5">
+              <div class="flex items-center flex-wrap gap-1.5 leading-tight">
+                <span class="font-extrabold text-sm md:text-base text-gray-900 dark:text-white truncate">${escRm(shortName)}</span>
+                <span class="text-[10px] md:text-xs uppercase font-black px-1.5 py-0.5 rounded border leading-none shadow-xs ${rBadgeColor}">${escRm(rTag)}</span>
+                ${caregiverTraineeHtml}
+              </div>
+              <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                ${fullName && fullName !== shortName ? `<span class="truncate">${escRm(fullName)}</span>` : ""}
+                ${contactHtml && contactHtml !== "-" ? `<span class="font-mono text-gray-600 dark:text-gray-300 font-semibold">${contactHtml}</span>` : ""}
+              </div>
+            </div>
+          </div>
+          ${isViewer ? `<span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-100/70 dark:bg-blue-900/50 px-2 py-0.5 rounded-full border border-blue-200 dark:border-blue-800 shrink-0 ml-2">You</span>` : isTraineeOfVol ? `<span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-100/70 dark:bg-emerald-900/50 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800 shrink-0 ml-2">Paired Trainee</span>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+
+  const targetPerson = globalLogistics.participants.find(
+    (p) => String(p.nric).trim().toUpperCase() === cleanNric
+  );
+  const targetName = targetPerson
+    ? targetPerson.shortName || targetPerson.name || targetPerson.fullName
+    : "";
+  const isViewingSelf =
+    currentUser &&
+    cleanNric === String(currentUser.nric).trim().toUpperCase();
+  const subtitleContext =
+    targetName && !isViewingSelf ? ` • ${targetName}'s Room` : "";
+
+  const modalHtml = `
+    <div class="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-xs animate-fade-in" id="roomOccupantsModal" onclick="if(event.target === this) closeRoomOccupantsModal()">
+      <div class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl max-w-sm md:max-w-md w-full border-2 border-gray-200 dark:border-gray-800 overflow-hidden flex flex-col max-h-[85vh] animate-slide-up">
+        <!-- Header -->
+        <div class="p-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-800/50 shrink-0">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <span class="w-8 h-8 rounded-xl bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 flex items-center justify-center text-base shrink-0 shadow-xs">
+              🛏️
+            </span>
+            <div class="min-w-0">
+              <h3 class="font-black text-base md:text-lg text-gray-900 dark:text-white truncate">${escRm(room.name)}</h3>
+              <p class="text-[11px] font-semibold text-gray-500 dark:text-gray-400">${occupants.length} Occupant${occupants.length === 1 ? "" : "s"}${room.capacity ? ` • Capacity: ${escRm(room.capacity)}` : ""}${escRm(subtitleContext)}</p>
+            </div>
+          </div>
+          <button onclick="closeRoomOccupantsModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 p-1.5 rounded-lg focus:outline-none transition-colors text-xl leading-none font-bold cursor-pointer" aria-label="Close">
+            &times;
+          </button>
+        </div>
+
+        <!-- Occupants List -->
+        <div class="p-3.5 md:p-4 overflow-y-auto custom-scrollbar space-y-2.5">
+          ${occupantsListHtml || '<div class="text-center py-6 text-gray-400 text-xs">No occupants listed for this room.</div>'}
+        </div>
+
+        <!-- Footer -->
+        <div class="p-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 shrink-0 flex justify-end">
+          <button onclick="closeRoomOccupantsModal()" class="w-full sm:w-auto px-5 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 text-xs md:text-sm font-bold rounded-xl transition active:scale-95 cursor-pointer">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML("beforeend", modalHtml);
+
+  document.removeEventListener("keydown", handleRoomModalEscape);
+  document.addEventListener("keydown", handleRoomModalEscape);
+};
+
+window.closeRoomOccupantsModal = function () {
+  const modal = document.getElementById("roomOccupantsModal");
+  if (modal) modal.remove();
+  document.removeEventListener("keydown", handleRoomModalEscape);
+};
+
+function handleRoomModalEscape(e) {
+  if (e.key === "Escape") {
+    window.closeRoomOccupantsModal();
+  }
+}
+
+function renderLandingMode() {
+  const activeTrip = hasActiveTrip();
+  const headingTitle = document.getElementById("landingHeadingTitle");
+  const headingSubtitle = document.getElementById("landingHeadingSubtitle");
+  const loginBoxTitle = document.getElementById("loginBoxTitle");
+  const loginPassLabel = document.getElementById("loginPassLabel");
+  const loginPassHint = document.getElementById("loginPassHint");
+  const loginPassInput = document.getElementById("loginPass");
+  const landingRegBox = document.getElementById("landingRegBox");
+  const landingReceiptBox = document.getElementById("landingReceiptBox");
+  const landingInfographicBox = document.getElementById("landingInfographicBox");
+  const landingHelplineBox = document.getElementById("landingHelplineBox");
+
+  if (!activeTrip) {
+    if (headingTitle) headingTitle.textContent = "No Trips Planned so far...";
+    if (headingSubtitle) headingSubtitle.classList.add("hidden-force");
+    if (loginBoxTitle) loginBoxTitle.textContent = "Admin Login";
+    if (loginPassLabel) loginPassLabel.textContent = "Admin Password";
+    if (loginPassHint) loginPassHint.classList.add("hidden-force");
+    if (loginPassInput) loginPassInput.placeholder = "Enter Admin Password";
+    if (landingRegBox) landingRegBox.classList.add("hidden-force");
+    if (landingReceiptBox) landingReceiptBox.classList.add("hidden-force");
+    if (landingInfographicBox) landingInfographicBox.classList.add("hidden-force");
+    if (landingHelplineBox) landingHelplineBox.remove();
+  } else {
+    if (headingTitle) headingTitle.textContent = "Welcome";
+    if (headingSubtitle) {
+      headingSubtitle.textContent = "Please select an option below.";
+      headingSubtitle.classList.remove("hidden-force");
+    }
+    if (loginBoxTitle) loginBoxTitle.textContent = "Secure Login";
+    if (loginPassLabel) loginPassLabel.textContent = "Password";
+    if (loginPassHint) loginPassHint.classList.remove("hidden-force");
+    if (loginPassInput) {
+      loginPassInput.placeholder = "e.g. S1234567A1989 / E12345671989";
+    }
+    if (landingRegBox) {
+      if (appSettings.registrationOpen)
+        landingRegBox.classList.remove("hidden-force");
+      else landingRegBox.classList.add("hidden-force");
+    }
+    if (landingReceiptBox) landingReceiptBox.classList.remove("hidden-force");
+  }
+}
+window.renderLandingMode = renderLandingMode;
+
+function applyHydrationDOMUpdates() {
+  const activeTrip = hasActiveTrip();
+  const tripStr =
+    activeTrip && appSettings.tripTitle && appSettings.tripYear
+      ? `${appSettings.tripTitle} ${appSettings.tripYear}`
+      : "";
+  const titleEls = ["deskTripName", "mobTripName", "unauthTripName"];
+  titleEls.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      if (tripStr) {
+        el.textContent = tripStr;
+        el.classList.remove("hidden-force");
+      } else {
+        el.classList.add("hidden-force");
+      }
+    }
+  });
+
+  renderLandingMode();
+  renderHeaderLegend();
+  renderHeaderHelpline();
+  renderLandingHelpline();
+  renderProfileHelpline();
+  renderLandingInfographic();
+  if (window.ArchiveMode && typeof window.ArchiveMode.syncUI === "function") {
+    window.ArchiveMode.syncUI();
+  }
+}
+
+function renderLandingInfographic() {
+  const box = document.getElementById("landingInfographicBox");
+  const img = document.getElementById("landingInfographicImg");
+  const link = document.getElementById("landingInfographicFullLink");
+  const title = document.getElementById("landingInfographicTitle");
+  if (!box || !img) return;
+
+  if (!hasActiveTrip()) {
+    box.classList.add("hidden-force");
+    return;
+  }
+
+  let settings = typeof appSettings !== "undefined" ? appSettings : {};
+  if (!settings.tripInfographicId && !settings.tripInfographicUrl) {
+    try {
+      const stored = localStorage.getItem("appSettings");
+      if (stored) settings = JSON.parse(stored);
+    } catch (e) {}
+  }
+
+  const infoId = settings.tripInfographicId || "";
+  const infoName = settings.tripInfographicName || "";
+  const infoUrl = settings.tripInfographicUrl || "";
+
+  if (infoId || infoUrl) {
+    let imgSrc = "";
+    if (infoUrl && (infoUrl.startsWith("data:") || infoUrl.startsWith("blob:"))) {
+      imgSrc = infoUrl;
+    } else if (infoId) {
+      imgSrc = `https://lh3.googleusercontent.com/d/${infoId}`;
+    } else {
+      const match = infoUrl.match(/[-\w]{25,}/);
+      imgSrc = match ? `https://lh3.googleusercontent.com/d/${match[0]}` : infoUrl;
+    }
+
+    const driveFileId = infoId || (infoUrl.match(/[-\w]{25,}/) ? infoUrl.match(/[-\w]{25,}/)[0] : "");
+    img.dataset.driveId = driveFileId;
+    img.onerror = function () {
+      const id = this.dataset.driveId;
+      if (!id) return;
+      if (!this.dataset.fallbackCount) {
+        this.dataset.fallbackCount = "1";
+        this.src = `https://drive.google.com/thumbnail?id=${id}&sz=w2000`;
+      } else if (this.dataset.fallbackCount === "1") {
+        this.dataset.fallbackCount = "2";
+        this.src = `https://drive.google.com/uc?export=view&id=${id}`;
+      }
+    };
+
+    img.src = imgSrc;
+    if (title) {
+      title.textContent = "TRIP INFOGRAPHIC";
+    }
+    if (link) {
+      link.href = infoUrl || (driveFileId ? `https://drive.google.com/file/d/${driveFileId}/view?usp=sharing` : "#");
+    }
+    box.classList.remove("hidden-force");
+  } else {
+    box.classList.add("hidden-force");
+  }
+}
+
+function renderHeaderHelpline() {
+  const headerTitleContainers = document.querySelectorAll(
+    "header > div:first-child",
+  );
+  headerTitleContainers.forEach((container) => {
+    let existing = container.querySelector(".header-helpline-box");
+    if (existing) existing.remove();
+  });
+}
+
+function renderLandingHelpline() {
+  const landingView =
+    document.getElementById("viewLanding") ||
+    document.getElementById("viewRegister");
+  if (!landingView) return;
+
+  let existing = document.getElementById("landingHelplineBox");
+  if (existing) existing.remove();
+
+  if (
+    !hasActiveTrip() ||
+    !appSettings ||
+    !appSettings.helpline ||
+    appSettings.helpline.length === 0
+  )
+    return;
+
+  let html = `<div id="landingHelplineBox" class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-md border-2 border-gray-200 dark:border-gray-700 text-center animate-slide-up mt-6">
+        <h3 class="text-lg font-bold mb-3 text-gray-900 dark:text-white uppercase tracking-tight">Need Help?</h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4 font-semibold">Contact the following people for assistance.</p>
+        <div class="flex flex-col gap-3">`;
+
+  const escHelp = typeof window.escapeHtml === "function" ? window.escapeHtml : (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  appSettings.helpline.forEach((h) => {
+    html += `<div class="w-full flex flex-col items-center justify-center gap-1 bg-gray-50 dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 py-3 rounded-xl shadow-md"><span class="font-bold text-sm">${escHelp(h.name)}</span>${renderPhoneLink(h.phone)}</div>`;
+  });
+
+  html += `</div></div>`;
+  landingView.insertAdjacentHTML("beforeend", html);
+}
+
+function renderProfileHelpline() {
+  const wrapper =
+    document.getElementById("profileHelplineWrapper") ||
+    document.getElementById("section-my-profile");
+  if (!wrapper) return;
+
+  let existing = document.getElementById("profileHelplineBox");
+  if (existing) existing.remove();
+
+  if (
+    !appSettings ||
+    !appSettings.helpline ||
+    appSettings.helpline.length === 0
+  )
+    return;
+
+  let html = `<div id="profileHelplineBox" class="bg-white dark:bg-gray-900 p-6 rounded-2xl shadow-md border-2 border-gray-200 dark:border-gray-800 text-center animate-slide-up mt-4">
+        <h3 class="text-lg font-bold mb-3 text-gray-900 dark:text-white uppercase tracking-tight">Need Help?</h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4 font-semibold">Contact the following people for assistance.</p>
+        <div class="flex flex-col gap-3">`;
+
+  const escHelpP = typeof window.escapeHtml === "function" ? window.escapeHtml : (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  appSettings.helpline.forEach((h) => {
+    html += `<div class="w-full flex flex-col items-center justify-center gap-1 bg-gray-50 dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 py-3 rounded-xl shadow-md"><span class="font-bold text-sm">${escHelpP(h.name)}</span>${renderPhoneLink(h.phone)}</div>`;
+  });
+
+  html += `</div></div>`;
+  if (wrapper.id === "profileHelplineWrapper") {
+    wrapper.innerHTML = html;
+  } else {
+    wrapper.insertAdjacentHTML("beforeend", html);
+  }
+}
+window.renderProfileHelpline = renderProfileHelpline;
+
+function hasActiveTrip(settings) {
+  const cfg =
+    settings || (typeof appSettings !== "undefined" ? appSettings : null);
+  if (!cfg || typeof cfg !== "object") return false;
+  if (cfg.isArchived) return false;
+  if (typeof cfg.hasActiveTrip === "boolean") {
+    return cfg.hasActiveTrip;
+  }
+  const hasTitle = Boolean(String(cfg.tripTitle || "").trim());
+  const hasYear = Boolean(String(cfg.tripYear || "").trim());
+  return Boolean(cfg.registrationOpen || (hasTitle && hasYear));
+}
+window.hasActiveTrip = hasActiveTrip;
+
+function getAdminDefaultPage(settings) {
+  return hasActiveTrip(settings) ? "roster.html" : "settings.html";
+}
+window.getAdminDefaultPage = getAdminDefaultPage;
+
+async function resolveAdminDefaultPage() {
+  try {
+    const config = await apiCall("getSettings");
+    if (config && config.status !== "error") {
+      appSettings = config;
+      isHydrated = true;
+      try {
+        localStorage.setItem("appSettings", JSON.stringify(appSettings));
+      } catch (e) {}
+      return getAdminDefaultPage(appSettings);
+    }
+  } catch (e) {
+    console.warn("Failed to refresh settings for admin landing page:", e);
+  }
+
+  let fallbackSettings =
+    typeof appSettings !== "undefined" ? appSettings : null;
+  if (!hasActiveTrip(fallbackSettings)) {
+    try {
+      const stored = localStorage.getItem("appSettings");
+      if (stored) fallbackSettings = JSON.parse(stored);
+    } catch (e) {}
+  }
+  return getAdminDefaultPage(fallbackSettings);
+}
+window.resolveAdminDefaultPage = resolveAdminDefaultPage;
+
+async function silentHydration() {
+  if (isHydrated) return;
+
+  const startPath = window.location.pathname;
+
+  // Check if entering or continuing in Read-Only Archive Mode
+  if (window.ArchiveMode && typeof window.ArchiveMode.bootstrapFromUrl === "function") {
+    await window.ArchiveMode.bootstrapFromUrl();
+  }
+
+  const inArchiveMode =
+    typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly();
+
+  if (inArchiveMode) {
+    try {
+      const config = await apiCall("getSettings");
+      if (config && config.status !== "error") {
+        appSettings = config;
+      }
+      applyHydrationDOMUpdates();
+      isHydrated = true;
+      if (window.initPage) await window.initPage();
+      if (window.ArchiveMode && typeof window.ArchiveMode.syncUI === "function") {
+        window.ArchiveMode.syncUI();
+      }
+    } catch (e) {
+      console.warn("Archived hydration failed:", e);
+      showToast("Could not load archived trip settings.", true);
+    } finally {
+      const viewLoading = document.getElementById("viewLoading");
+      if (viewLoading) viewLoading.classList.add("hidden-force");
+    }
+    return;
+  }
+
+  // 1. Instant Cache Hydration (0ms Latency)
+  const cachedSettings = localStorage.getItem("appSettings");
+  if (cachedSettings) {
+    try {
+      appSettings = JSON.parse(cachedSettings);
+      applyHydrationDOMUpdates();
+      isHydrated = true;
+      if (window.initPage) await window.initPage();
+
+      const viewLoading = document.getElementById("viewLoading");
+      if (viewLoading) viewLoading.classList.add("hidden-force");
+    } catch (e) {}
+  }
+
+  // 2. Background Network Revalidation (With cold-start retries)
+  let config = null;
+  var attempts = 0;
+
+  while (attempts < 3 && !config) {
+    try {
+      config = await apiCall("getSettings");
+    } catch (e) {
+      attempts++;
+      console.warn(`Hydration attempt ${attempts} failed:`, e.message);
+      if (attempts < 3) await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
+
+  try {
+    if (config) {
+      appSettings = config;
+      localStorage.setItem("appSettings", JSON.stringify(appSettings));
+      applyHydrationDOMUpdates();
+
+      if (window.location.pathname === startPath) {
+        if (!isHydrated) {
+          isHydrated = true;
+          if (window.initPage) await window.initPage();
+        } else if (
+          window.location.pathname.endsWith("settings.html") &&
+          typeof buildSettingsUI === "function"
+        ) {
+          buildSettingsUI();
+        }
+      }
+    } else if (!cachedSettings) {
+      // Critical failure on first load without cache
+      showToast("Server connection delayed. Please refresh the page.", true);
+    }
+  } catch (e) {
+    console.warn("Background hydration processing failed", e);
+  } finally {
+    const viewLoading = document.getElementById("viewLoading");
+    if (viewLoading) viewLoading.classList.add("hidden-force");
+  }
+}
+
+window.refreshSettingsRealtime = async function () {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
+    return;
+  }
+  try {
+    const config = await apiCall("getSettings", { force: true });
+    if (config && config.status !== "error") {
+      appSettings = config;
+      localStorage.setItem("appSettings", JSON.stringify(appSettings));
+      if (typeof applyHydrationDOMUpdates === "function") {
+        applyHydrationDOMUpdates();
+      }
+      if (
+        window.location.pathname.endsWith("settings.html") &&
+        typeof buildSettingsUI === "function" &&
+        document.activeElement &&
+        document.activeElement.tagName !== "INPUT" &&
+        document.activeElement.tagName !== "TEXTAREA"
+      ) {
+        buildSettingsUI();
+      }
+    }
+  } catch (e) {}
+};
+
+function processDisplayNames(participants) {
+  if (!participants) return;
+  const nameCounts = {};
+  participants.forEach((p) => {
+    p.shortName = (p.shortName || "").trim().toUpperCase();
+    p.name = (p.name || "").trim().toUpperCase();
+    const sName = p.shortName || p.name;
+    nameCounts[sName] = (nameCounts[sName] || 0) + 1;
+  });
+  participants.forEach((p) => {
+    const sName = p.shortName || p.name;
+    if (nameCounts[sName] > 1) {
+      const roleChar = p.role ? p.role.charAt(0).toUpperCase() : "U";
+      const projAcr = p.group ? getProjectAbbreviation(p.group) : "N/A";
+      p.displayName = `${sName} (${roleChar}) (${projAcr})`;
+    } else {
+      p.displayName = sName;
+    }
+  });
+  const displayCounts = {};
+  participants.forEach((p) => {
+    displayCounts[p.displayName] = (displayCounts[p.displayName] || 0) + 1;
+  });
+  participants.forEach((p) => {
+    if (displayCounts[p.displayName] > 1) {
+      const sName = p.shortName || p.name;
+      const roleChar = p.role ? p.role.charAt(0).toUpperCase() : "U";
+      const projAcr = p.group ? getProjectAbbreviation(p.group) : "N/A";
+      const words = p.name.split(" ");
+      let extraChar = "";
+      if (words.length > 1) {
+        const diffWord = words.find((w) => w !== sName);
+        if (diffWord) extraChar = diffWord.charAt(0) + ".";
+        else extraChar = words[1].charAt(0) + ".";
+      } else {
+        extraChar = p.name.charAt(0) + ".";
+      }
+      p.displayName = `${sName} ${extraChar} (${roleChar}) (${projAcr})`;
+    }
+  });
+  const finalCounts = {};
+  participants.forEach((p) => {
+    finalCounts[p.displayName] = (finalCounts[p.displayName] || 0) + 1;
+  });
+  participants.forEach((p) => {
+    if (finalCounts[p.displayName] > 1 && p.nric) {
+      p.displayName = `${p.displayName} [${p.nric.slice(-4)}]`;
+    }
+  });
+}
+function toBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = (error) => reject(error);
+  });
+}
+async function deleteAdminParticipant(nric) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
+    showToast("Read-only mode: archived trips cannot be modified.", true);
+    return;
+  }
+  if (
+    !(await appConfirm(
+      "Are you sure you want to delete this participant? Their details will be moved to a separate sheet.",
+      "Delete Participant",
+      "Delete",
+      "Cancel",
+      true,
+    ))
+  )
+    return;
+  try {
+    showToast("Deleting...", false, 10000);
+    const res = await apiCall("deleteParticipant", { nric });
+    if (res.status === "success") {
+      showToast("Participant deleted successfully.");
+      closeParticipantSummaryModal();
+      if (typeof fetchRoster === "function") fetchRoster();
+      if (typeof loadRoster === "function") loadRoster();
+    } else {
+      showToast("Error: " + res.message, true);
+    }
+  } catch (e) {
+    showToast("Failed to delete.", true);
+  }
+}
+
+window.handleGpmRelatedSearch = function (fullQuery) {
+  const dd = document.getElementById("gpmRelatedDropdown");
+  if (!dd) return;
+
+  const parts = (fullQuery || "").split("|");
+  const query = parts[parts.length - 1].trim().toLowerCase();
+
+  let allP = [];
+  if (typeof adminRosterData !== "undefined" && adminRosterData.length > 0) {
+    allP = adminRosterData;
+  } else if (typeof loadedFamily !== "undefined" && loadedFamily.length > 0) {
+    allP = loadedFamily;
+  }
+
+  const trainees = allP.filter((p) => p.role === "TRAINEE");
+
+  if (!query) {
+    // Show all trainees if just trailing comma
+    // Actually it's better to hide if they didn't type yet after comma
+  }
+
+  const results = trainees.filter(
+    (t) =>
+      (t.fullName || "").toLowerCase().includes(query) ||
+      (t.shortName || "").toLowerCase().includes(query),
+  );
+
+  if (results.length === 0) {
+    if (dd)
+      dd.innerHTML =
+        '<div class="p-2 text-xs text-gray-500 text-center">No trainees found.</div>';
+  } else {
+    if (dd)
+      dd.innerHTML = results
+        .map((t) => {
+          const escName = (t.fullName || "").replace(/'/g, "\\'");
+          return (
+            '<div class="p-2 border-b-2 border-gray-100 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700" onclick="selectGpmRelatedTrainee(\'' +
+            escName +
+            '\')"><div class="font-bold text-xs text-gray-800 dark:text-gray-200">' +
+            t.fullName +
+            '</div><div class="text-xs text-gray-500">' +
+            (t.shortName || "-") +
+            "</div></div>"
+          );
+        })
+        .join("");
+  }
+  dd.classList.remove("hidden-force");
+};
+
+window.selectGpmRelatedTrainee = function (name) {
+  const inp = document.getElementById("gpmRelated");
+  if (inp) {
+    let parts = inp.value.split("|");
+    parts.pop();
+    parts.push(name);
+    inp.value = parts.join(" | ") + " | ";
+  }
+  const dd = document.getElementById("gpmRelatedDropdown");
+  if (dd) dd.classList.add("hidden-force");
+  setTimeout(() => {
+    if (inp) inp.focus();
+  }, 10);
+};
+
+document.addEventListener("click", function (e) {
+  const dd = document.getElementById("gpmRelatedDropdown");
+  if (
+    dd &&
+    !e.target.closest("#gpmRelated") &&
+    !e.target.closest("#gpmRelatedDropdown")
+  ) {
+    dd.classList.add("hidden-force");
+  }
+});
+
+// SPA Router
+window.navigateTo = async function (url) {
+  let targetUrl = url;
+  const targetPage = targetUrl.split("?")[0];
+
+  // Settings is disabled while viewing an archived trip — admin must exit archive view first
+  if (
+    targetPage === "settings.html" &&
+    typeof window.isArchiveReadOnly === "function" &&
+    window.isArchiveReadOnly()
+  ) {
+    if (typeof showToast === "function") {
+      showToast(
+        "Settings is disabled while viewing an archived trip. Exit archive view first.",
+        true,
+      );
+    }
+    return;
+  }
+
+  // Navigating to Dashboard (dashboard.html) or Login (index.html) exits archive mode cleanly
+  if (
+    (targetPage === "dashboard.html" || targetPage === "index.html") &&
+    !targetUrl.includes("archive=") &&
+    typeof window.isArchiveReadOnly === "function" &&
+    window.isArchiveReadOnly()
+  ) {
+    if (window.ArchiveMode && typeof window.ArchiveMode.exitArchive === "function") {
+      await window.ArchiveMode.exitArchive(targetPage);
+      return;
+    }
+  }
+
+  // While browsing an archived trip, preserve ?archive=<id> across all 6 pages & subpages
+  const activeArch =
+    window.ArchiveMode && typeof window.ArchiveMode.getActiveArchive === "function"
+      ? window.ArchiveMode.getActiveArchive()
+      : null;
+  if (
+    activeArch &&
+    !targetUrl.includes("archive=") &&
+    targetPage !== "settings.html" &&
+    targetPage !== "dashboard.html" &&
+    targetPage !== "index.html" &&
+    targetPage !== "register.html"
+  ) {
+    targetUrl = `${targetPage}?archive=${encodeURIComponent(activeArch.archiveId)}`;
+  }
+
+  const currentFile = window.location.pathname.split("/").pop() || "index.html";
+  const targetQuery = targetUrl.includes("?") ? "?" + targetUrl.split("?")[1] : "";
+  if (currentFile === targetPage && window.location.search === targetQuery) {
+    return;
+  }
+
+  history.pushState(null, "", targetUrl);
+  await loadPage(targetUrl);
+};
+
+window.addEventListener("popstate", async () => {
+  const page = window.location.pathname.split("/").pop() || "index.html";
+  const urlWithQuery = page + window.location.search;
+  if (window.ArchiveMode && typeof window.ArchiveMode.bootstrapFromUrl === "function") {
+    const prevArch = window.ArchiveMode.getActiveArchive();
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("archive") && prevArch) {
+      sessionStorage.removeItem("activeArchiveTrip");
+      window.ArchiveMode.resetAllModuleCaches();
+      try {
+        const cachedLive = localStorage.getItem("appSettings");
+        if (cachedLive) appSettings = JSON.parse(cachedLive);
+      } catch (e) {}
+    } else if (params.get("archive") && (!prevArch || prevArch.archiveId !== params.get("archive"))) {
+      window.ArchiveMode.resetAllModuleCaches();
+      await window.ArchiveMode.bootstrapFromUrl();
+      try {
+        const cfg = await apiCall("getSettings");
+        if (cfg && cfg.status !== "error") appSettings = cfg;
+      } catch (e) {}
+    }
+  }
+  loadPage(urlWithQuery);
+});
+
+window.showLoading = function () {
+  const viewLoading = document.getElementById("viewLoading");
+  if (viewLoading) viewLoading.classList.remove("hidden-force");
+};
+
+window.hideLoading = function () {
+  const viewLoading = document.getElementById("viewLoading");
+  if (viewLoading) viewLoading.classList.add("hidden-force");
+};
+
+const htmlCache = new Map();
+
+function cleanupCurrentPage() {
+  try {
+    if (typeof stopAttendancePolling === "function") stopAttendancePolling();
+  } catch (e) {}
+  try {
+    if (typeof stopLogisticsPolling === "function") stopLogisticsPolling();
+  } catch (e) {}
+  try {
+    if (typeof stopFinancePolling === "function") stopFinancePolling();
+  } catch (e) {}
+  try {
+    if (typeof stopMinutesPolling === "function") stopMinutesPolling();
+  } catch (e) {}
+  // Reset page-scoped initPage so destination pages without initPage never re-run a stale initializer
+  window.initPage = null;
+}
+
+async function loadPage(url) {
+  const urlKey = url.split("?")[0];
+  const isPublicTarget =
+    urlKey === "index.html" ||
+    urlKey === "register.html" ||
+    urlKey === "" ||
+    urlKey === "./";
+  if (!currentUser && !isPublicTarget) {
+    history.replaceState(null, "", "index.html");
+    return loadPage("index.html");
+  }
+
+  cleanupCurrentPage();
+  showLoading();
+  try {
+    let html;
+    if (htmlCache.has(urlKey)) {
+      html = htmlCache.get(urlKey);
+    } else {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Page not found");
+      html = await response.text();
+      htmlCache.set(urlKey, html);
+    }
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+
+    document.title = doc.title;
+
+    const oldLayout =
+      document.getElementById("authLayout") ||
+      document.getElementById("unauthLayout");
+    const newLayout =
+      doc.getElementById("authLayout") || doc.getElementById("unauthLayout");
+
+    if (oldLayout && newLayout) {
+      oldLayout.replaceWith(newLayout.cloneNode(true));
+
+      // Cleanup old modals
+      Array.from(document.body.children).forEach((child) => {
+        if (
+          child.tagName === "DIV" &&
+          ![
+            "authLayout",
+            "unauthLayout",
+            "devModeBar",
+            "toast",
+            "viewLoading",
+          ].includes(child.id)
+        ) {
+          child.remove();
+        }
+      });
+
+      // Insert new modals
+      Array.from(doc.body.children).forEach((child) => {
+        if (
+          child.tagName === "DIV" &&
+          ![
+            "authLayout",
+            "unauthLayout",
+            "devModeBar",
+            "toast",
+            "viewLoading",
+          ].includes(child.id)
+        ) {
+          document.body.appendChild(child.cloneNode(true));
+        }
+      });
+
+      if (currentUser) {
+        const deskUserName = document.getElementById("deskUserName");
+        const deskUserRole = document.getElementById("deskUserRole");
+        const roleStr =
+          currentUser.nric === "ADMIN"
+            ? "Main Admin"
+            : currentUser.role === "admin"
+              ? "Committee"
+              : "Participant";
+        if (deskUserName) deskUserName.textContent = currentUser.name || "User";
+        if (deskUserRole) deskUserRole.textContent = roleStr;
+        if (currentUser.role !== "admin") {
+          document
+            .querySelectorAll(".admin-only")
+            .forEach((el) => el.classList.add("hidden-force"));
+        }
+        if (currentUser.role === "admin") {
+          const navProfile = document.getElementById("nav-profile");
+          if (navProfile) navProfile.classList.add("hidden-force");
+        }
+        const deskTripName = document.getElementById("deskTripName");
+        if (deskTripName && appSettings && appSettings.tripName)
+          deskTripName.textContent = appSettings.tripName;
+      }
+      const unauthTripName = document.getElementById("unauthTripName");
+      if (
+        unauthTripName &&
+        typeof appSettings !== "undefined" &&
+        appSettings &&
+        appSettings.tripName
+      ) {
+        unauthTripName.textContent = appSettings.tripName;
+        unauthTripName.classList.remove("hidden-force");
+      }
+    }
+
+    const existingScripts = new Set(
+      Array.from(document.querySelectorAll("script[src]")).map((s) =>
+        s.getAttribute("src"),
+      ),
+    );
+    const newScripts = Array.from(doc.querySelectorAll("script[src]")).map(
+      (s) => s.getAttribute("src"),
+    );
+
+    for (const src of newScripts) {
+      if (src && !existingScripts.has(src)) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.body.appendChild(script);
+        });
+      }
+    }
+
+    const inlineScripts = Array.from(doc.querySelectorAll("script:not([src])"));
+    for (const script of inlineScripts) {
+      if (script.textContent.includes("window.initPage =")) {
+        const newScript = document.createElement("script");
+        newScript.textContent = script.textContent;
+        document.body.appendChild(newScript);
+        document.body.removeChild(newScript);
+      }
+    }
+
+    if (typeof applyHydrationDOMUpdates === "function")
+      applyHydrationDOMUpdates();
+    if (typeof window.initPage === "function") {
+      await window.initPage();
+    }
+    if (window.ArchiveMode && typeof window.ArchiveMode.syncUI === "function") {
+      window.ArchiveMode.syncUI();
+    }
+  } catch (e) {
+    console.error("SPA routing error:", e);
+    window.location.assign(url);
+  } finally {
+    hideLoading();
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("a");
+  if (
+    link &&
+    link.getAttribute("href") &&
+    !link.getAttribute("href").startsWith("http") &&
+    !link.getAttribute("href").startsWith("blob:") &&
+    !link.getAttribute("href").startsWith("mailto:") &&
+    !link.getAttribute("href").startsWith("tel:") &&
+    !link.getAttribute("href").startsWith("#") &&
+    !link.getAttribute("href").startsWith("javascript:") &&
+    !link.getAttribute("target") &&
+    !link.hasAttribute("download")
+  ) {
+    e.preventDefault();
+    navigateTo(link.getAttribute("href"));
+  }
+});
