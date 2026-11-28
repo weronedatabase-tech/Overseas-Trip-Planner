@@ -596,12 +596,18 @@ function renderAttendanceLists() {
     }
   });
 
+  const prevNotCheckedScroll = notCheckedList.scrollTop;
+  const prevCheckedScroll = checkedList.scrollTop;
+
   notCheckedList.innerHTML =
     notCheckedHtml ||
     '<p class="text-xs text-gray-400 dark:text-gray-500 font-bold p-2 text-center mt-2">Empty</p>';
   checkedList.innerHTML =
     checkedHtml ||
     '<p class="text-xs text-gray-400 dark:text-gray-500 font-bold p-2 text-center mt-2">Empty</p>';
+
+  notCheckedList.scrollTop = prevNotCheckedScroll;
+  checkedList.scrollTop = prevCheckedScroll;
 
   document.getElementById("attNotCheckedCount").textContent = notCheckedCount;
   document.getElementById("attCheckedCount").textContent = checkedCount;
@@ -747,8 +753,19 @@ function toggleAttendanceStatus(nric, forceState) {
     if (typeof showToast === "function") showToast("Read-only mode: archived attendance cannot be changed.", true);
     return;
   }
-  attendanceState[nric] = { status: forceState, ts: Date.now() };
+  const nowTs = Date.now();
+  attendanceState[nric] = { status: forceState, ts: nowTs };
   pendingAttendanceUpdates.add(nric);
+
+  // Instant 0ms WebSocket + cross-tab optimistic push BEFORE the 800ms HTTP debounce
+  const juncEl = document.getElementById("attJunctureSelect");
+  const activeJuncture = juncEl ? juncEl.value : "";
+  if (activeJuncture && window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+    window.LiveSync.sendLive("live:attendance", {
+      juncture: activeJuncture,
+      updates: [{ nric, status: forceState, ts: nowTs }],
+    });
+  }
 
   const searchInput = document.getElementById("attSearchInput");
   const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
@@ -783,11 +800,13 @@ function toggleAttendanceStatus(nric, forceState) {
   triggerPulseFeedback(nric, forceState);
 }
 
-function triggerPulseFeedback(nric, isChecked, cardPrefix = "att-card-") {
+function triggerPulseFeedback(nric, isChecked, cardPrefix = "att-card-", shouldScroll = false) {
   setTimeout(() => {
     const card = document.getElementById(`${cardPrefix}${nric}`);
     if (card) {
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (shouldScroll) {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
       const ringColor = isChecked ? "ring-green-400" : "ring-red-400";
       const bgColor = isChecked ? "bg-green-50" : "bg-red-50";
       const darkBgColor = isChecked
@@ -813,8 +832,105 @@ function triggerPulseFeedback(nric, isChecked, cardPrefix = "att-card-") {
         );
       }, 800);
     }
-  }, 50);
+  }, 30);
 }
+
+window.applyRemoteAttendanceDelta = function (juncture, updates) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
+  if (!juncture || !Array.isArray(updates) || updates.length === 0) return;
+
+  // 1. Ad-Hoc Bus Tracker delta ("__BUS__<juncture>")
+  if (String(juncture).startsWith("__BUS__")) {
+    const busJunc = String(juncture).slice("__BUS__".length);
+    const busModal = document.getElementById("busTrackerModal");
+    if (
+      !busModal ||
+      busModal.classList.contains("hidden-force") ||
+      adhocBusState.juncture !== busJunc
+    ) {
+      return;
+    }
+
+    const pulsed = [];
+    let hasChanges = false;
+    updates.forEach((u) => {
+      if (!u || !u.nric) return;
+      const rawKey = String(u.nric);
+      if (pendingAdhocBusUpdates.has(rawKey)) return;
+      const parts = rawKey.split("::");
+      if (parts.length < 2) return;
+      const pNric = parts[0].trim().toUpperCase();
+      const bName = parts.slice(1).join("::").trim();
+      const ts = Number(u.ts) || Date.now();
+      const cur = adhocBusState.data[pNric] || { bus: "", ts: 0 };
+
+      if (ts >= (cur.ts || 0)) {
+        if (u.status) {
+          if (cur.bus !== bName) {
+            adhocBusState.data[pNric] = { bus: bName, ts };
+            hasChanges = true;
+            pulsed.push({ nric: pNric, checked: true });
+          } else {
+            adhocBusState.data[pNric] = { bus: bName, ts };
+          }
+          if (bName && !adhocBusState.busOptions.includes(bName)) {
+            adhocBusState.busOptions.push(bName);
+            renderBusFilterOptions();
+          }
+        } else if (cur.bus === bName || !cur.bus) {
+          if (cur.bus !== "") {
+            adhocBusState.data[pNric] = { bus: "", ts };
+            hasChanges = true;
+            pulsed.push({ nric: pNric, checked: false });
+          }
+        }
+      }
+    });
+
+    if (hasChanges) {
+      const nb = document.getElementById("busNotBoardedList");
+      const bd = document.getElementById("busBoardedList");
+      const prevNb = nb ? nb.scrollTop : 0;
+      const prevBd = bd ? bd.scrollTop : 0;
+      renderBusLists();
+      if (nb) nb.scrollTop = prevNb;
+      if (bd) bd.scrollTop = prevBd;
+      pulsed.forEach((item) => triggerPulseFeedback(item.nric, item.checked, "bus-card-", false));
+    }
+    return true;
+  }
+
+  // 2. Regular Attendance Tab delta
+  const attTab = document.getElementById("tab-attendance");
+  const juncEl = document.getElementById("attJunctureSelect");
+  if (!attTab || attTab.classList.contains("hidden-force") || !juncEl || juncEl.value !== juncture) {
+    return false;
+  }
+
+  const pulsed = [];
+  let hasChanges = false;
+  updates.forEach((u) => {
+    if (!u || !u.nric) return;
+    const key = String(u.nric).trim();
+    if (pendingAttendanceUpdates.has(key)) return;
+    const ts = Number(u.ts) || Date.now();
+    const lEntry = attendanceState[key] || { status: false, ts: 0 };
+    if (ts >= (lEntry.ts || 0)) {
+      const nextStatus = Boolean(u.status);
+      if (lEntry.status !== nextStatus) {
+        hasChanges = true;
+        pulsed.push({ nric: key, checked: nextStatus });
+      }
+      attendanceState[key] = { status: nextStatus, ts };
+    }
+  });
+
+  if (hasChanges) {
+    renderAttendanceLists();
+    pulsed.forEach((item) => triggerPulseFeedback(item.nric, item.checked, "att-card-", false));
+  }
+  return true;
+};
 
 async function executeAttendanceSync() {
   if (pendingAttendanceUpdates.size === 0) return;
@@ -878,22 +994,62 @@ async function manualSyncAttendance() {
   }
 }
 
-window.pollAttendanceNow = async function () {
+window.pollAttendanceNow = async function (msg) {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
+  const attTab = document.getElementById("tab-attendance");
+  if (!attTab || attTab.classList.contains("hidden-force")) return;
+
+  const domainList = Array.isArray(msg?.domains) ? msg.domains : msg?.domain ? [msg.domain] : [];
+  const hasDomain = (...ds) => domainList.includes("all") || ds.some((d) => domainList.includes(d));
+
+  // Refresh juncture dropdowns when settings changed remotely
+  if (hasDomain("settings")) {
+    const juncSel = document.getElementById("attJunctureSelect");
+    if (juncSel && typeof getRegularJunctures === "function") {
+      const prevVal = juncSel.value;
+      const regJunctures = getRegularJunctures();
+      const nextHtml = regJunctures.map((j) => `<option value="${j}">${j}</option>`).join("");
+      if (juncSel.innerHTML !== nextHtml) {
+        juncSel.innerHTML = nextHtml;
+        if (prevVal && regJunctures.includes(prevVal)) {
+          juncSel.value = prevVal;
+        } else if (regJunctures.length > 0) {
+          juncSel.value = regJunctures[0];
+          savedAttJuncture = regJunctures[0];
+        }
+      }
+    }
+    const busModal = document.getElementById("busTrackerModal");
+    if (busModal && !busModal.classList.contains("hidden-force") && typeof renderBusJunctures === "function") {
+      renderBusJunctures();
+    }
+  }
+
+  // Refresh participant/group/bus roster when logistics or roster changed remotely
+  if (hasDomain("roster", "logistics")) {
+    try {
+      const logRes = await apiCall("fetchLogistics", { bypassLocalCache: true });
+      if (logRes && Array.isArray(logRes.participants)) {
+        globalLogistics = logRes;
+        if (typeof processDisplayNames === "function") processDisplayNames(globalLogistics.participants);
+        if (typeof applyGlobalSorting === "function") {
+          globalLogistics.participants = applyGlobalSorting(globalLogistics.participants);
+        }
+        if (typeof populateAttendanceAssignments === "function") {
+          populateAttendanceAssignments();
+        }
+        renderAttendanceLists();
+      }
+    } catch (e) {}
+  }
+
   // If Bus Tracker Modal is open, also poll bus attendance
   const busModal = document.getElementById("busTrackerModal");
   if (busModal && !busModal.classList.contains("hidden-force")) {
     await pollBusAttendanceNow();
   }
 
-  const attTab = document.getElementById("tab-attendance");
-  if (
-    !attTab ||
-    attTab.classList.contains("hidden-force") ||
-    isAttendanceSyncing ||
-    pendingAttendanceUpdates.size > 0
-  )
-    return;
+  if (isAttendanceSyncing || pendingAttendanceUpdates.size > 0) return;
 
   const juncEl = document.getElementById("attJunctureSelect");
   const juncture = juncEl ? juncEl.value : "";
@@ -902,8 +1058,8 @@ window.pollAttendanceNow = async function () {
   const fetchStartTime = Date.now();
 
   try {
-    const res = await apiCall("fetchAttendanceData", { juncture });
-    if (lastLocalChange > fetchStartTime) return;
+    const res = await apiCall("fetchAttendanceData", { juncture, bypassLocalCache: true });
+    if (lastLocalChange > fetchStartTime || pendingAttendanceUpdates.size > 0) return;
 
     const remoteData = res.data || {};
     let hasChanges = false;
@@ -921,7 +1077,13 @@ window.pollAttendanceNow = async function () {
     }
 
     if (hasChanges) {
+      const nc = document.getElementById("attNotCheckedList");
+      const ck = document.getElementById("attCheckedList");
+      const prevNc = nc ? nc.scrollTop : 0;
+      const prevCk = ck ? ck.scrollTop : 0;
       renderAttendanceLists();
+      if (nc) nc.scrollTop = prevNc;
+      if (ck) ck.scrollTop = prevCk;
     }
   } catch (e) {}
 };
@@ -929,7 +1091,7 @@ window.pollAttendanceNow = async function () {
 function startAttendancePolling() {
   if (attendancePollInterval) clearInterval(attendancePollInterval);
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
-  attendancePollInterval = setInterval(window.pollAttendanceNow, 8000);
+  attendancePollInterval = setInterval(window.pollAttendanceNow, 45000);
 }
 
 function stopAttendancePolling() {
@@ -1778,6 +1940,7 @@ function toggleBusStatus(nric, shouldBoard) {
   const currentFilter = busFilterEl ? busFilterEl.value : adhocBusState.busFilter;
   const ts = Date.now();
 
+  const liveBusUpdates = [];
   if (shouldBoard) {
     if (!currentFilter || currentFilter === "ALL") {
       showBusFlashMessage(
@@ -1797,23 +1960,40 @@ function toggleBusStatus(nric, shouldBoard) {
     const prevBus = adhocBusState.data[upperNric]?.bus;
     if (prevBus && prevBus !== currentFilter) {
       const prevKey = `${upperNric}::${prevBus}`;
-      pendingAdhocBusUpdates.set(prevKey, {
+      const prevObj = {
         nric: prevKey,
         status: false,
         ts: ts - 1,
-      });
+      };
+      pendingAdhocBusUpdates.set(prevKey, prevObj);
+      liveBusUpdates.push(prevObj);
     }
 
     adhocBusState.data[upperNric] = { bus: currentFilter, ts };
     const newKey = `${upperNric}::${currentFilter}`;
-    pendingAdhocBusUpdates.set(newKey, { nric: newKey, status: true, ts });
+    const newObj = { nric: newKey, status: true, ts };
+    pendingAdhocBusUpdates.set(newKey, newObj);
+    liveBusUpdates.push(newObj);
   } else {
     const prevBus = adhocBusState.data[upperNric]?.bus || currentFilter;
     adhocBusState.data[upperNric] = { bus: "", ts };
     if (prevBus && prevBus !== "ALL") {
       const compKey = `${upperNric}::${prevBus}`;
-      pendingAdhocBusUpdates.set(compKey, { nric: compKey, status: false, ts });
+      const offObj = { nric: compKey, status: false, ts };
+      pendingAdhocBusUpdates.set(compKey, offObj);
+      liveBusUpdates.push(offObj);
     }
+  }
+
+  if (
+    liveBusUpdates.length > 0 &&
+    window.LiveSync &&
+    typeof window.LiveSync.sendLive === "function"
+  ) {
+    window.LiveSync.sendLive("live:attendance", {
+      juncture: "__BUS__" + adhocBusState.juncture,
+      updates: liveBusUpdates,
+    });
   }
 
   const searchInput = document.getElementById("busSearchInput");
@@ -1839,9 +2019,15 @@ function toggleBusStatus(nric, shouldBoard) {
     }
   }
 
+  const nb = document.getElementById("busNotBoardedList");
+  const bd = document.getElementById("busBoardedList");
+  const prevNb = nb ? nb.scrollTop : 0;
+  const prevBd = bd ? bd.scrollTop : 0;
   renderBusLists();
+  if (nb) nb.scrollTop = prevNb;
+  if (bd) bd.scrollTop = prevBd;
   scheduleBusAttendanceSync();
-  triggerPulseFeedback(nric, shouldBoard, "bus-card-");
+  triggerPulseFeedback(nric, shouldBoard, "bus-card-", false);
 }
 
 window.handleBusSearch = function () {
@@ -1905,6 +2091,7 @@ async function pollBusAttendanceNow() {
   try {
     const res = await apiCall("fetchAttendanceData", {
       juncture: "__BUS__" + adhocBusState.juncture,
+      bypassLocalCache: true,
     });
     if (lastLocalChange > fetchStartTime || pendingAdhocBusUpdates.size > 0) return;
 
@@ -1919,17 +2106,27 @@ async function pollBusAttendanceNow() {
       hasChanges = true;
     }
 
-    Object.keys(parsed.participantBusMap).forEach((nric) => {
-      const rEntry = parsed.participantBusMap[nric];
+    const allNrics = new Set([
+      ...Object.keys(parsed.participantBusMap || {}),
+      ...Object.keys(adhocBusState.data || {}),
+    ]);
+    allNrics.forEach((nric) => {
+      const rEntry = parsed.participantBusMap[nric] || { bus: "", ts: 0 };
       const lEntry = adhocBusState.data[nric] || { bus: "", ts: 0 };
-      if (rEntry.ts > lEntry.ts) {
+      if (rEntry.ts > lEntry.ts || (rEntry.bus !== lEntry.bus && rEntry.ts >= lEntry.ts)) {
         adhocBusState.data[nric] = rEntry;
         hasChanges = true;
       }
     });
 
     if (hasChanges) {
+      const nb = document.getElementById("busNotBoardedList");
+      const bd = document.getElementById("busBoardedList");
+      const prevNb = nb ? nb.scrollTop : 0;
+      const prevBd = bd ? bd.scrollTop : 0;
       renderBusLists();
+      if (nb) nb.scrollTop = prevNb;
+      if (bd) bd.scrollTop = prevBd;
     }
   } catch (e) {}
 }

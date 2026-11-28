@@ -270,6 +270,196 @@ return true;
 }
 
 // ==========================================
+// REAL-TIME SYNC VERSION VECTOR ENGINE
+// Ultra-fast CacheService-backed change feed (zero Sheet reads on poll)
+// ==========================================
+const SYNC_ACTION_DOMAINS = {
+  syncAttendanceUpdate: ['attendance'],
+  syncPairingUpdates: ['pairings', 'logistics'],
+  syncRoomUpdates: ['rooms', 'logistics'],
+  syncAssignments: ['logistics', 'roster', 'attendance'],
+  saveFinance: ['finance'],
+  syncReceipts: ['receipts', 'finance'],
+  uploadReceipt: ['receipts', 'finance'],
+  syncMinutes: ['minutes'],
+  updateProfile: ['roster', 'logistics', 'finance'],
+  adminUpdateParticipant: ['roster', 'logistics', 'finance'],
+  submitRegistration: ['roster', 'logistics', 'finance'],
+  deleteParticipant: ['roster', 'logistics', 'finance'],
+  toggleRegistration: ['settings'],
+  toggleEdits: ['settings'],
+  addCommittee: ['settings'],
+  removeCommittee: ['settings'],
+  addHelpline: ['settings'],
+  removeHelpline: ['settings'],
+  addProjectGroup: ['settings', 'roster', 'logistics'],
+  removeProjectGroup: ['settings', 'roster', 'logistics'],
+  modifyJunctures: ['settings', 'attendance'],
+  modifyICJunctures: ['settings', 'attendance'],
+  saveSortingRules: ['settings', 'roster', 'logistics'],
+  saveCustomViewsOrder: ['settings'],
+  saveTripSettings: ['settings'],
+  addDriveAccess: ['settings'],
+  removeDriveAccess: ['settings'],
+  massDriveAccess: ['settings'],
+  setTripFile: ['settings', 'files'],
+  uploadDriveFile: ['files'],
+  createDriveFolder: ['files'],
+  createGoogleDoc: ['files'],
+  renameDriveItem: ['files'],
+  deleteDriveItem: ['files'],
+  bulkDriveOperation: ['files'],
+  extractData: ['files'],
+  deleteArchivedTrip: ['settings'],
+  archiveAndReset: ['all', 'roster', 'logistics', 'pairings', 'rooms', 'attendance', 'finance', 'receipts', 'minutes', 'settings', 'files'],
+  clearCache: ['all', 'roster', 'logistics', 'pairings', 'rooms', 'attendance', 'finance', 'receipts', 'minutes', 'settings', 'files']
+};
+
+function getSyncStateKey() {
+  return 'SYNC_STATE_V1_' + getDbId();
+}
+
+function loadSyncState() {
+  const key = getSyncStateKey();
+  const cache = CacheService.getScriptCache();
+  try {
+    const raw = cache.get(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.seq === 'number' && parsed.domains) {
+        return parsed;
+      }
+    }
+  } catch (e) {}
+
+  let state = null;
+  try {
+    const propRaw = PropertiesService.getScriptProperties().getProperty(key);
+    if (propRaw) {
+      const parsed = JSON.parse(propRaw);
+      if (parsed && typeof parsed.seq === 'number' && parsed.domains) {
+        state = parsed;
+      }
+    }
+  } catch (e) {}
+
+  if (!state) {
+    const now = Date.now();
+    state = {
+      seq: 1,
+      global: now,
+      domains: {
+        roster: now,
+        logistics: now,
+        pairings: now,
+        rooms: now,
+        attendance: now,
+        finance: now,
+        receipts: now,
+        minutes: now,
+        settings: now,
+        files: now
+      },
+      events: []
+    };
+  }
+  try {
+    cache.put(key, JSON.stringify(state), 21600);
+  } catch (e) {}
+  return state;
+}
+
+function recordSyncMutation(action, reqData, result) {
+  if (ACTIVE_ARCHIVE_SHEET_ID) return null;
+  const domains = SYNC_ACTION_DOMAINS[action];
+  if (!domains || !domains.length) return null;
+  if (result && result.status === 'error') return null;
+
+  const key = getSyncStateKey();
+  const state = loadSyncState();
+  const now = Math.max(Date.now(), (state.global || 0) + 1);
+  state.seq = (state.seq || 0) + 1;
+  state.global = now;
+  if (!state.domains) state.domains = {};
+  domains.forEach(d => {
+    if (d !== 'all') state.domains[d] = now;
+  });
+
+  const ev = {
+    seq: state.seq,
+    ts: now,
+    action: action,
+    domain: domains[0],
+    domains: domains.slice(),
+    clientId: reqData && reqData.clientId ? String(reqData.clientId).slice(0, 64) : ''
+  };
+  if (reqData && reqData.juncture) ev.juncture = String(reqData.juncture);
+  if (reqData && reqData.groupName) ev.groupName = String(reqData.groupName);
+  const fId = reqData && (reqData.folderId || reqData.parentFolderId || reqData.currentFolderId);
+  if (fId) ev.folderId = String(fId);
+
+  if (!Array.isArray(state.events)) state.events = [];
+  state.events.push(ev);
+  if (state.events.length > 40) {
+    state.events = state.events.slice(-40);
+  }
+
+  const serialized = JSON.stringify(state);
+  try {
+    CacheService.getScriptCache().put(key, serialized, 21600);
+  } catch (e) {}
+  try {
+    const compact = JSON.stringify({
+      seq: state.seq,
+      global: state.global,
+      domains: state.domains,
+      events: state.events.slice(-15)
+    });
+    PropertiesService.getScriptProperties().setProperty(key, compact);
+  } catch (e) {}
+
+  if (result && typeof result === 'object') {
+    result._syncSeq = state.seq;
+    result._syncTs = now;
+  }
+  return state;
+}
+
+function getSyncState(sinceSeq, auth) {
+  const state = loadSyncState();
+  const clientSeq = Number(sinceSeq) || 0;
+  const authInfo = auth
+    ? {
+        nric: auth.nric || '',
+        role: auth.role || 'user',
+        name: auth.name || '',
+        isMainAdmin: Boolean(auth.isMainAdmin),
+      }
+    : null;
+  if (clientSeq > 0 && state.seq <= clientSeq) {
+    return {
+      status: 'success',
+      changed: false,
+      seq: state.seq,
+      global: state.global,
+      authInfo: authInfo
+    };
+  }
+  const recentEvents = Array.isArray(state.events)
+    ? (clientSeq > 0 ? state.events.filter(ev => ev && ev.seq > clientSeq) : state.events.slice(-10))
+    : [];
+  return {
+    status: 'success',
+    changed: true,
+    seq: state.seq,
+    global: state.global,
+    domains: state.domains || {},
+    events: recentEvents,
+    authInfo: authInfo
+  };
+}
+
+// ==========================================
 // API ROUTER
 // ==========================================
 function setupSheets(ss) {
@@ -283,7 +473,7 @@ if (name === "Raw Data") {
 } else if (name === "Finance Options") {
   sheet.appendRow(["JSON Data - Do Not Edit"]);
   sheet.appendRow([""]);
-  sheet.appendRow(["MYR", "MYR to SGD Rate:", '=GOOGLEFINANCE("CURRENCY:MYRSGD")']);
+  ensureFinanceRatesSheetRows(sheet);
 } else if (name === "Receipts") {
   sheet.appendRow(["Receipt ID", "Timestamp", "Uploader NRIC", "Currency", "Amount", "Rate", "SGD Amount", "Category ID", "File URL", "Remarks", "Is Deleted", "Paid By NRIC", "Is Reimbursed", "Uploader Name"]);
   sheet.setFrozenRows(1);
@@ -350,6 +540,10 @@ if (data.archiveId || data.archiveSheetId) {
 }
 let result = {};
 switch(data.action) {
+case 'getSyncState':
+  requireAuth(auth, 'user');
+  result = getSyncState(data.sinceSeq, auth);
+  break;
 case 'listArchivedTrips':
   requireAuth(auth, 'admin');
   result = listArchivedTrips();
@@ -536,7 +730,7 @@ case 'syncAttendanceUpdate':
   result = syncAttendanceUpdate(data.juncture, data.updates, auth.name || data.takenBy || 'System', auth);
   break;
 case 'fetchFinance':
-  result = fetchFinanceScoped(auth, Boolean(data.force || data.forceRebuild));
+  result = fetchFinanceScoped(auth, Boolean(data.force || data.forceRebuild), Boolean(data.refreshRates));
   break;
 case 'saveFinance':
   requireAuth(auth, 'admin');
@@ -574,6 +768,13 @@ case 'deleteArchivedTrip':
   result = deleteArchivedTrip(data.targetArchiveId, data.targetSheetId, auth);
   break;
 default: throw new Error("Unknown action.");
+}
+if (SYNC_ACTION_DOMAINS[data.action] && (!result || result.status !== 'error')) {
+  try {
+    recordSyncMutation(data.action, data, result);
+  } catch (syncErr) {
+    console.warn('recordSyncMutation warning:', syncErr);
+  }
 }
 return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 } catch (error) {
@@ -1554,15 +1755,205 @@ finally { lock.releaseLock(); }
 // ==========================================
 // FINANCE ENGINE & RECEIPTS
 // ==========================================
-function fetchFinanceScoped(auth, forceRebuild = false) {
-  const full = fetchFinance(forceRebuild);
+const SUPPORTED_FINANCE_CURRENCIES = [
+  'MYR', 'USD', 'EUR', 'GBP', 'AUD', 'IDR',
+  'THB', 'JPY', 'KRW', 'TWD', 'PHP', 'VND'
+];
+
+function ensureFinanceRatesSheetRows(sheet) {
+  if (!sheet || ACTIVE_ARCHIVE_SHEET_ID) return;
+  try {
+    const count = SUPPORTED_FINANCE_CURRENCIES.length;
+    const existingFormulas = sheet.getRange(3, 1, count, 3).getFormulas();
+    const existingValues = sheet.getRange(3, 1, count, 3).getValues();
+    let needsWrite = false;
+    const rowsToWrite = [];
+
+    for (let i = 0; i < count; i++) {
+      const code = SUPPORTED_FINANCE_CURRENCIES[i];
+      const expectedLabel = code + ' to SGD Rate:';
+      const expectedFormula = '=GOOGLEFINANCE("CURRENCY:' + code + 'SGD")';
+      const curCode = String(existingValues[i][0] || '').trim().toUpperCase();
+      const curFormula = String(existingFormulas[i][2] || '').trim().toUpperCase();
+      if (curCode !== code || curFormula !== expectedFormula.toUpperCase()) {
+        needsWrite = true;
+      }
+      rowsToWrite.push([code, expectedLabel, expectedFormula]);
+    }
+
+    if (needsWrite) {
+      sheet.getRange(3, 1, count, 3).setValues(rowsToWrite);
+      SpreadsheetApp.flush();
+    }
+  } catch (e) {
+    console.warn('ensureFinanceRatesSheetRows warning:', e.message);
+  }
+}
+
+function parseGoogleFinanceQuoteHtml(html, currencyCode) {
+  if (!html) return null;
+  const cur = String(currencyCode || '').trim().toUpperCase();
+  const patterns = [
+    new RegExp('"' + cur + '\\s*/\\s*SGD"[^\\[]*\\[([0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)'),
+    /data-last-price="([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"/,
+    /class="YMlKec fxKbKc"[^>]*>([0-9,]+(?:\.[0-9]+)?)</
+  ];
+  for (let i = 0; i < patterns.length; i++) {
+    const m = html.match(patterns[i]);
+    if (m && m[1]) {
+      const num = parseFloat(String(m[1]).replace(/,/g, ''));
+      if (!isNaN(num) && isFinite(num) && num > 0) return num;
+    }
+  }
+  return null;
+}
+
+function fetchGoogleFinanceLiveRates(forceRefresh = false, sheet = null) {
+  const cache = CacheService.getScriptCache();
+  const rateCacheKey = 'FINANCE_LIVE_RATES_V2';
+
+  if (!forceRefresh) {
+    try {
+      const cachedRaw = cache.get(rateCacheKey);
+      if (cachedRaw) {
+        const cachedObj = JSON.parse(cachedRaw);
+        if (cachedObj && cachedObj.rates && Object.keys(cachedObj.rates).length >= 10) {
+          return cachedObj;
+        }
+      }
+    } catch (e) {}
+  }
+
+  const ratesObj = { SGD: 1 };
+  let updatedAt = '';
+
+  // 1. Read Google Sheets =GOOGLEFINANCE("CURRENCY:<CUR>SGD") values first
+  if (sheet && !ACTIVE_ARCHIVE_SHEET_ID) {
+    ensureFinanceRatesSheetRows(sheet);
+    try {
+      const count = SUPPORTED_FINANCE_CURRENCIES.length;
+      const sheetRows = sheet.getRange(3, 1, count, 5).getValues();
+      sheetRows.forEach(r => {
+        const code = String(r[0] || '').trim().toUpperCase();
+        const val = typeof r[2] === 'number' ? r[2] : parseFloat(r[2]);
+        if (code && SUPPORTED_FINANCE_CURRENCIES.indexOf(code) !== -1 && !isNaN(val) && isFinite(val) && val > 0) {
+          ratesObj[code] = val;
+        }
+      });
+    } catch (e) {
+      console.warn('Sheet GOOGLEFINANCE read warning:', e.message);
+    }
+  }
+
+  // 2. Fetch directly from Google Finance (parallel UrlFetchApp.fetchAll) for any missing currencies or on forceRefresh
+  const toFetch = forceRefresh
+    ? SUPPORTED_FINANCE_CURRENCIES.slice()
+    : SUPPORTED_FINANCE_CURRENCIES.filter(c => !(ratesObj[c] > 0));
+
+  let fetchedLiveCount = 0;
+  if (toFetch.length > 0) {
+    try {
+      const requests = toFetch.map(cur => ({
+        url: 'https://www.google.com/finance/quote/' + cur + '-SGD?hl=en',
+        method: 'get',
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      }));
+      const responses = UrlFetchApp.fetchAll(requests);
+      for (let i = 0; i < responses.length; i++) {
+        try {
+          if (responses[i].getResponseCode() === 200) {
+            const parsed = parseGoogleFinanceQuoteHtml(responses[i].getContentText(), toFetch[i]);
+            if (parsed && parsed > 0) {
+              ratesObj[toFetch[i]] = parsed;
+              fetchedLiveCount++;
+            }
+          }
+        } catch (err) {}
+      }
+      if (fetchedLiveCount > 0) {
+        updatedAt = new Date().toISOString();
+      }
+    } catch (e) {
+      console.warn('Google Finance fetchAll warning:', e.message);
+    }
+  }
+
+  const liveCountBeforeFallback = Object.keys(ratesObj).length - 1;
+  if (fetchedLiveCount > 0 || (forceRefresh && liveCountBeforeFallback > 0)) {
+    updatedAt = new Date().toISOString();
+  }
+
+  // 3. Merge with persisted last-known-good Google Finance rates for any transient failures
+  const props = PropertiesService.getScriptProperties();
+  let stored = null;
+  try {
+    const rawStored = props.getProperty('LAST_GOOD_GF_RATES_V2');
+    if (rawStored) stored = JSON.parse(rawStored);
+  } catch (e) {}
+
+  if (stored && stored.rates) {
+    SUPPORTED_FINANCE_CURRENCIES.forEach(code => {
+      if (!(ratesObj[code] > 0) && stored.rates[code] > 0) {
+        ratesObj[code] = stored.rates[code];
+      }
+    });
+    if (!updatedAt && stored.ratesUpdatedAt) {
+      updatedAt = stored.ratesUpdatedAt;
+    }
+  }
+
+  if (!updatedAt && Object.keys(ratesObj).length > 1) {
+    updatedAt = new Date().toISOString();
+  }
+
+  const result = {
+    rates: ratesObj,
+    ratesSource: 'Google Finance',
+    ratesUpdatedAt: updatedAt
+  };
+
+  // Persist last-known-good snapshot and update audit columns D/E in Finance Options sheet
+  if (Object.keys(ratesObj).length >= 2) {
+    try {
+      if (fetchedLiveCount > 0 || (forceRefresh && liveCountBeforeFallback > 0) || !stored || Object.keys(ratesObj).length > Object.keys((stored && stored.rates) || {}).length) {
+        props.setProperty('LAST_GOOD_GF_RATES_V2', JSON.stringify(result));
+      }
+    } catch (e) {}
+
+    if (sheet && !ACTIVE_ARCHIVE_SHEET_ID && fetchedLiveCount > 0) {
+      try {
+        const snapshotRows = SUPPORTED_FINANCE_CURRENCIES.map(code => [
+          ratesObj[code] || '',
+          updatedAt
+        ]);
+        sheet.getRange(3, 4, snapshotRows.length, 2).setValues(snapshotRows);
+      } catch (e) {}
+    }
+  }
+
+  if (Object.keys(ratesObj).length >= 10) {
+    try {
+      cache.put(rateCacheKey, JSON.stringify(result), 900); // 15-minute TTL
+    } catch (e) {}
+  }
+
+  return result;
+}
+
+function fetchFinanceScoped(auth, forceRebuild = false, refreshRates = false) {
+  const full = fetchFinance(forceRebuild, refreshRates);
   if (auth && auth.role === 'admin') return full;
 
   const rawData = full.data || { config: {}, options: [] };
   const rawConfig = rawData.config || {};
   const rawOptions = Array.isArray(rawData.options) ? rawData.options : (Array.isArray(rawData) ? rawData : []);
   const finalOpt = rawConfig.finalOptionId
-    ? rawOptions.find(o => o.id === rawConfig.finalOptionId)
+    ? rawOptions.find(o => o && o.id === rawConfig.finalOptionId && !o.isDeleted)
     : null;
   const safeOptions = finalOpt
     ? [{
@@ -1582,7 +1973,9 @@ function fetchFinanceScoped(auth, forceRebuild = false) {
         config: { finalOptionId: rawConfig.finalOptionId || '' },
         options: safeOptions
       },
-      rates: full.rates || { SGD: 1 }
+      rates: full.rates || { SGD: 1 },
+      ratesSource: full.ratesSource || 'Google Finance',
+      ratesUpdatedAt: full.ratesUpdatedAt || ''
     };
   }
 
@@ -1607,20 +2000,34 @@ function fetchFinanceScoped(auth, forceRebuild = false) {
         finalOptionId: rawConfig.finalOptionId || '',
         perPersonFee: rawConfig.perPersonFee || 0,
         payNowNumber: rawConfig.payNowNumber || '',
+        showPaymentSection: Boolean(rawConfig.showPaymentSection),
         feeDeviations: myFeeDeviations,
         feesReceived: myFeesReceived
       },
       options: safeOptions
     },
-    rates: full.rates || { SGD: 1 }
+    rates: full.rates || { SGD: 1 },
+    ratesSource: full.ratesSource || 'Google Finance',
+    ratesUpdatedAt: full.ratesUpdatedAt || ''
   };
 }
 
-function fetchFinance(forceRebuild = false) {
+function fetchFinance(forceRebuild = false, refreshRates = false) {
 const cacheKey = getCacheKey('FINANCE');
-if(!forceRebuild) {
-const cached = getLargeCache(cacheKey);
-if(cached) return JSON.parse(cached);
+let cachedRes = null;
+if (!forceRebuild) {
+  const cached = getLargeCache(cacheKey);
+  if (cached) {
+    try { cachedRes = JSON.parse(cached); } catch (e) {}
+  }
+}
+
+if (cachedRes && !refreshRates) {
+  const liveBundle = fetchGoogleFinanceLiveRates(false, null);
+  cachedRes.rates = liveBundle.rates;
+  cachedRes.ratesSource = liveBundle.ratesSource;
+  cachedRes.ratesUpdatedAt = liveBundle.ratesUpdatedAt;
+  return cachedRes;
 }
 
 const ss = getDatabase();
@@ -1629,22 +2036,27 @@ if (!sheet) {
 sheet = ss.insertSheet("Finance Options");
 sheet.appendRow(["JSON Data - Do Not Edit"]);
 sheet.appendRow([""]);
-sheet.appendRow(["MYR", "MYR to SGD Rate:", '=GOOGLEFINANCE("CURRENCY:MYRSGD")']);
+ensureFinanceRatesSheetRows(sheet);
 }
 
-let ratesObj = { "SGD": 1 };
-try {
-const ratesData = sheet.getRange(3, 1, 13, 3).getValues();
-ratesData.forEach(r => { if(r[0] && r[1] && !isNaN(r[2]) && parseFloat(r[2]) > 0) ratesObj[String(r[0]).trim().toUpperCase()] = parseFloat(r[2]); });
-} catch(e){}
+const liveBundle = fetchGoogleFinanceLiveRates(refreshRates, sheet);
 
-const data = sheet.getDataRange().getValues();
-let jsonData = null;
-if (data.length >= 2 && data[1][0]) {
-try { jsonData = JSON.parse(String(data[1][0])); } catch(e) {}
+let jsonData = cachedRes ? cachedRes.data : null;
+if (!cachedRes || forceRebuild) {
+  const data = sheet.getDataRange().getValues();
+  jsonData = null;
+  if (data.length >= 2 && data[1][0]) {
+    try { jsonData = JSON.parse(String(data[1][0])); } catch(e) {}
+  }
 }
 
-const res = { status: 'success', data: jsonData, rates: ratesObj };
+const res = {
+  status: 'success',
+  data: jsonData,
+  rates: liveBundle.rates,
+  ratesSource: liveBundle.ratesSource,
+  ratesUpdatedAt: liveBundle.ratesUpdatedAt
+};
 putLargeCache(cacheKey, JSON.stringify(res));
 return res;
 }
@@ -1656,7 +2068,7 @@ if (!sheet) {
   sheet = ss.insertSheet("Finance Options");
   sheet.appendRow(["JSON Data - Do Not Edit"]);
   sheet.appendRow([""]);
-  sheet.appendRow(["MYR", "MYR to SGD Rate:", '=GOOGLEFINANCE("CURRENCY:MYRSGD")']);
+  ensureFinanceRatesSheetRows(sheet);
 }
 
 const lock = LockService.getScriptLock();
@@ -2606,6 +3018,7 @@ function deleteParticipant(nric) {
     sheet.deleteRow(rowIndex);
     
     removeLargeCache(getCacheKey('ROSTER'));
+    removeLargeCache(getCacheKey('LOGISTICS'));
     return { status: 'success' };
   } catch(e) {
     return { status: 'error', message: e.message };

@@ -83,24 +83,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Pillar 1 Sync Safety: Track mutational interactions
+  // Pillar 1 Sync Safety: Track mutational interactions (never treat passive scroll as a mutation)
   document.addEventListener("input", () => {
     lastLocalChange = Date.now();
   });
   document.addEventListener("change", () => {
     lastLocalChange = Date.now();
   });
-  document.addEventListener("click", (e) => {
-    if (e.target.tagName === "BUTTON" || e.target.closest("button"))
-      lastLocalChange = Date.now();
-  });
-  document.addEventListener(
-    "scroll",
-    () => {
-      lastLocalChange = Date.now();
-    },
-    { capture: true, passive: true },
-  );
 
   // Setup Long Press for Participant Quick View
   setupGlobalLongPress();
@@ -620,7 +609,14 @@ async function submitAdminProfileEdit(btn) {
     if (res.status === "success") {
       showToast("Participant updated successfully.");
       closeParticipantSummaryModal();
-      setTimeout(() => window.location.reload(), 800);
+      if (typeof window.dispatchRealtimeUpdate === "function") {
+        window.dispatchRealtimeUpdate({
+          type: "sync:local",
+          action: "adminUpdateParticipant",
+          domain: "roster",
+          domains: ["roster", "logistics", "finance"],
+        });
+      }
     } else {
       throw new Error(res.message || "Update failed");
     }
@@ -654,7 +650,16 @@ async function deleteParticipant(nric) {
     if (res.status === "success") {
       showToast("Participant deleted & archived.");
       closeParticipantSummaryModal();
-      if (typeof loadParticipantsData === "function") loadParticipantsData();
+      if (typeof window.dispatchRealtimeUpdate === "function") {
+        window.dispatchRealtimeUpdate({
+          type: "sync:local",
+          action: "deleteParticipant",
+          domain: "roster",
+          domains: ["roster", "logistics", "finance"],
+        });
+      } else if (typeof loadParticipantsData === "function") {
+        loadParticipantsData();
+      }
     } else {
       throw new Error(res.message || "Delete failed");
     }
@@ -1332,26 +1337,53 @@ async function silentHydration() {
   }
 }
 
-window.refreshSettingsRealtime = async function () {
+window.refreshSettingsRealtime = async function (msg) {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
     return;
   }
   try {
-    const config = await apiCall("getSettings", { force: true });
+    const config =
+      msg && msg.settings && typeof msg.settings === "object"
+        ? msg.settings
+        : await apiCall("getSettings", { bypassLocalCache: true });
     if (config && config.status !== "error") {
       appSettings = config;
       localStorage.setItem("appSettings", JSON.stringify(appSettings));
       if (typeof applyHydrationDOMUpdates === "function") {
         applyHydrationDOMUpdates();
       }
-      if (
-        window.location.pathname.endsWith("settings.html") &&
-        typeof buildSettingsUI === "function" &&
-        document.activeElement &&
-        document.activeElement.tagName !== "INPUT" &&
-        document.activeElement.tagName !== "TEXTAREA"
-      ) {
-        buildSettingsUI();
+      if (window.location.pathname.endsWith("settings.html")) {
+        // Surgical non-destructive Settings refresh (preserves scroll, modals, and typed inputs)
+        if (typeof applyAdminVisuals === "function") applyAdminVisuals();
+        if (typeof renderJunctureList === "function") {
+          renderJunctureList(appSettings.junctures || []);
+        }
+        if (typeof renderGroupList === "function") {
+          renderGroupList(appSettings.projectGroups || []);
+        }
+        if (typeof renderDriveAccessList === "function") {
+          renderDriveAccessList(appSettings.driveAccess || []);
+        }
+        if (typeof renderCommList === "function") {
+          renderCommList(appSettings.committee || []);
+        }
+        if (typeof renderHelplineList === "function") {
+          renderHelplineList(appSettings.helpline || []);
+        }
+        const activeId = document.activeElement ? document.activeElement.id : "";
+        if (
+          typeof syncTripDateConfigInputs === "function" &&
+          activeId !== "tripStartDate" &&
+          activeId !== "tripEndDate"
+        ) {
+          syncTripDateConfigInputs(appSettings.tripStartDate || "", appSettings.tripEndDate || "");
+        }
+        if (
+          window.ArchiveMode &&
+          typeof window.ArchiveMode.renderArchivedTripsSection === "function"
+        ) {
+          window.ArchiveMode.renderArchivedTripsSection();
+        }
       }
     }
   } catch (e) {}
@@ -1780,6 +1812,14 @@ async function loadPage(url) {
     }
     if (window.ArchiveMode && typeof window.ArchiveMode.syncUI === "function") {
       window.ArchiveMode.syncUI();
+    }
+    if (window.LiveSync) {
+      if (typeof window.LiveSync.setView === "function") {
+        window.LiveSync.setView();
+      }
+      if (typeof window.LiveSync.refreshPresenceBadge === "function") {
+        window.LiveSync.refreshPresenceBadge();
+      }
     }
   } catch (e) {
     console.error("SPA routing error:", e);

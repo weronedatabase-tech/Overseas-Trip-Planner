@@ -1,11 +1,45 @@
 /**
- * Direct Google Apps Script API Client
- * Works identically on GitHub Pages, Google AI Studio, and local static servers.
- * Uses API_URL globally defined in backend/config.js with CORS-simple requests.
+ * Hybrid Real-Time + Direct GAS API Client
+ * - When a persistent Node.js WebSocket/Cache server is available (same-origin on Cloud Run/AI Studio/localhost,
+ *   or cross-origin via REALTIME_SERVER_URL on GitHub Pages), routes /api calls through it for 0ms cached reads,
+ *   <50ms WebSocket push, and FIFO background GAS writes.
+ * - Automatically falls back seamlessly to direct Google Apps Script (API_URL) if the Node server is unset or unreachable.
  */
 window.CLIENT_ID =
   window.CLIENT_ID ||
   "client_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+
+window.getRealtimeServerBaseUrl = function () {
+  try {
+    if (typeof REALTIME_SERVER_URL === "string" && REALTIME_SERVER_URL.trim() !== "") {
+      return REALTIME_SERVER_URL.trim().replace(/\/+$/, "");
+    }
+    if (typeof window !== "undefined" && window.location) {
+      const host = String(window.location.hostname || "").toLowerCase();
+      const proto = String(window.location.protocol || "").toLowerCase();
+      if (
+        (proto === "http:" || proto === "https:") &&
+        host &&
+        !host.endsWith(".github.io") &&
+        host !== "github.io"
+      ) {
+        return window.location.origin.replace(/\/+$/, "");
+      }
+    }
+  } catch (e) {}
+  return "";
+};
+
+window.getRealtimeWsUrl = function () {
+  const base = window.getRealtimeServerBaseUrl();
+  if (!base) return "";
+  if (base.startsWith("https://")) return "wss://" + base.slice("https://".length);
+  if (base.startsWith("http://")) return "ws://" + base.slice("http://".length);
+  return "";
+};
+
+let realtimeServerUnavailableUntil = 0;
+const REALTIME_FAILOVER_COOLDOWN_MS = 15000;
 
 const API_CACHE = new Map();
 const API_INFLIGHT = new Map();
@@ -81,6 +115,45 @@ function getStoredAuthToken() {
   } catch (e) {}
   return "";
 }
+
+const DOMAIN_CACHE_PREFIXES = {
+  roster: ["fetchAdminRoster", "fetchLogistics", "getProfile", "getPublicTrainees", "fetchFinance"],
+  logistics: ["fetchLogistics", "fetchAdminRoster", "getProfile", "fetchAttendanceData"],
+  pairings: ["fetchPairingsOnly", "fetchLogistics", "getProfile"],
+  rooms: ["fetchRoomsOnly", "fetchLogistics", "getProfile"],
+  attendance: ["fetchAttendanceData", "fetchLogistics"],
+  finance: ["fetchFinance", "fetchReceipts", "getProfile"],
+  receipts: ["fetchReceipts", "fetchFinance", "getProfile"],
+  minutes: ["fetchMinutes"],
+  settings: ["getSettings", "fetchAttendanceData", "fetchLogistics", "fetchAdminRoster", "getProfile"],
+  files: ["getSettings"],
+  all: ["ALL"],
+};
+
+function invalidateLocalApiCacheForDomains(domains) {
+  const list = Array.isArray(domains) ? domains : [domains];
+  const prefixes = new Set();
+  for (const d of list) {
+    const mapped = DOMAIN_CACHE_PREFIXES[d];
+    if (!mapped) continue;
+    for (const p of mapped) prefixes.add(p);
+  }
+  if (prefixes.has("ALL")) {
+    API_CACHE.clear();
+    return;
+  }
+  if (prefixes.size === 0) return;
+  for (const key of API_CACHE.keys()) {
+    for (const p of prefixes) {
+      if (key.startsWith(p + "::")) {
+        API_CACHE.delete(key);
+        break;
+      }
+    }
+  }
+}
+
+window.invalidateLocalApiCacheForDomains = invalidateLocalApiCacheForDomains;
 
 function invalidateLocalApiCache(action) {
   const entry = MUTATION_INVALIDATION_MAP[action];
@@ -159,8 +232,15 @@ async function apiCall(action, payload = {}, retries = 2) {
     }
   }
 
-  const endpoint = typeof API_URL !== "undefined" ? API_URL : "";
-  if (!endpoint) {
+  const gasEndpoint = typeof API_URL !== "undefined" ? API_URL : "";
+  const realtimeBase =
+    typeof window.getRealtimeServerBaseUrl === "function"
+      ? window.getRealtimeServerBaseUrl()
+      : "";
+  const useRealtimeProxy =
+    Boolean(realtimeBase) && Date.now() >= realtimeServerUnavailableUntil;
+  const primaryEndpoint = useRealtimeProxy ? `${realtimeBase}/api` : gasEndpoint;
+  if (!primaryEndpoint && !gasEndpoint) {
     throw new Error("API_URL is not configured in backend/config.js.");
   }
 
@@ -168,6 +248,8 @@ async function apiCall(action, payload = {}, retries = 2) {
     payload && typeof payload === "object" && !Array.isArray(payload)
       ? { ...payload }
       : {};
+  const bypassLocalCache = Boolean(safePayload.bypassLocalCache);
+  delete safePayload.bypassLocalCache;
   const forceRefresh = Boolean(safePayload.force || safePayload.forceRebuild);
   const authToken = getStoredAuthToken();
 
@@ -175,6 +257,9 @@ async function apiCall(action, payload = {}, retries = 2) {
     action: action,
     ...safePayload,
   };
+  if (action !== "getSyncState" && window.CLIENT_ID) {
+    reqBody.clientId = window.CLIENT_ID;
+  }
   if (authToken) {
     reqBody.authToken = authToken;
   }
@@ -188,7 +273,7 @@ async function apiCall(action, payload = {}, retries = 2) {
   delete cachePayloadCopy.forceRebuild;
   const cacheKey = `${action}::${activeArchive ? activeArchive.archiveId : "live"}::${authToken ? authToken.slice(-8) : "anon"}::${JSON.stringify(cachePayloadCopy)}`;
 
-  if (isCacheable && !forceRefresh) {
+  if (isCacheable && !forceRefresh && !bypassLocalCache) {
     const cached = API_CACHE.get(cacheKey);
     if (cached && Date.now() - cached.ts < API_CACHE_TTL_MS) {
       return JSON.parse(cached.raw);
@@ -202,21 +287,37 @@ async function apiCall(action, payload = {}, retries = 2) {
   const mutationDomain = invalidateLocalApiCache(action);
 
   const executeFetch = async () => {
+    let activeEndpoint = primaryEndpoint || gasEndpoint;
+    let usedProxy = Boolean(useRealtimeProxy && activeEndpoint === `${realtimeBase}/api`);
+
     for (let i = 0; i <= retries; i++) {
       try {
-        // Direct CORS-simple POST to Google Apps Script (no OPTIONS preflight)
-        const response = await fetch(endpoint, {
+        const response = await fetch(activeEndpoint, {
           method: "POST",
           body: JSON.stringify(reqBody),
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           redirect: "follow",
         });
 
+        // If the Node realtime server is sleeping/unreachable (502/503/504/404), fall back straight to GAS
+        if (usedProxy && (response.status >= 500 || response.status === 404) && gasEndpoint) {
+          realtimeServerUnavailableUntil = Date.now() + REALTIME_FAILOVER_COOLDOWN_MS;
+          activeEndpoint = gasEndpoint;
+          usedProxy = false;
+          throw new Error("Network fallback to GAS");
+        }
+
         const text = await response.text();
         let data;
         try {
           data = JSON.parse(text);
         } catch (parseError) {
+          if (usedProxy && gasEndpoint) {
+            realtimeServerUnavailableUntil = Date.now() + REALTIME_FAILOVER_COOLDOWN_MS;
+            activeEndpoint = gasEndpoint;
+            usedProxy = false;
+            throw new Error("Network fallback to GAS");
+          }
           console.warn(`API Parse Error on attempt ${i + 1}:`, text.slice(0, 200));
           throw new Error("SERVER_PARSE_ERROR");
         }
@@ -232,6 +333,21 @@ async function apiCall(action, payload = {}, retries = 2) {
         }
         return text;
       } catch (err) {
+        // Immediate failover from Node proxy to direct GAS on connection failure
+        if (
+          usedProxy &&
+          gasEndpoint &&
+          err.message &&
+          (err.message.includes("fetch") ||
+            err.message.includes("Network") ||
+            err.message.includes("Failed to fetch"))
+        ) {
+          realtimeServerUnavailableUntil = Date.now() + REALTIME_FAILOVER_COOLDOWN_MS;
+          activeEndpoint = gasEndpoint;
+          usedProxy = false;
+          continue;
+        }
+
         if (
           err.message &&
           err.message !== "SERVER_PARSE_ERROR" &&
@@ -258,7 +374,7 @@ async function apiCall(action, payload = {}, retries = 2) {
   };
 
   const promise = executeFetch();
-  if (isCacheable && !forceRefresh) {
+  if (isCacheable && !forceRefresh && !bypassLocalCache) {
     API_INFLIGHT.set(cacheKey, promise);
   }
 
@@ -270,11 +386,16 @@ async function apiCall(action, payload = {}, retries = 2) {
       API_CACHE.set(cacheKey, { ts: Date.now(), raw: rawText });
     } else if (mutationDomain) {
       invalidateLocalApiCache(action);
+      if (parsed && typeof parsed._syncSeq === "number" && window.LiveSync && typeof window.LiveSync.noteLocalSeq === "function") {
+        window.LiveSync.noteLocalSeq(parsed._syncSeq);
+      }
       if (window.LiveSync && typeof window.LiveSync.broadcast === "function") {
         window.LiveSync.broadcast({
           type: "sync:update",
           action: action,
           domain: mutationDomain,
+          domains: [mutationDomain],
+          syncSeq: parsed && parsed._syncSeq ? parsed._syncSeq : undefined,
           clientId: window.CLIENT_ID,
           ts: Date.now(),
         });
@@ -282,52 +403,139 @@ async function apiCall(action, payload = {}, retries = 2) {
     }
     return parsed;
   } finally {
-    if (isCacheable && !forceRefresh) {
+    if (isCacheable && !forceRefresh && !bypassLocalCache) {
       API_INFLIGHT.delete(cacheKey);
     }
   }
 }
 
 // ==========================================
-// CROSS-TAB REAL-TIME DISPATCHER (NO NODE SERVER NEEDED)
+// UNIFIED REAL-TIME DISPATCHER (WEBSOCKET DELTA + CROSS-TAB + GAS FALLBACK)
 // ==========================================
 window.dispatchRealtimeUpdate = async function (msg) {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) {
     return;
   }
   if (!msg) return;
-  const domain = msg.domain || "all";
+
+  // Fast 0ms in-memory delta path (skip HTTP refetch when the active view handled the rich WebSocket delta!)
+  let handledDirectly = false;
+  try {
+    if (msg.type === "delta:attendance" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemoteAttendanceDelta === "function" && window.applyRemoteAttendanceDelta(msg.juncture, msg.updates) === true) {
+        handledDirectly = true;
+      }
+      if (typeof window.applyRemoteIcAttendanceDelta === "function" && window.applyRemoteIcAttendanceDelta(msg.juncture, msg.updates) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:pairings" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemotePairingsDelta === "function" && window.applyRemotePairingsDelta(msg.updates) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:rooms" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemoteRoomsDelta === "function" && window.applyRemoteRoomsDelta(msg.updates) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:assignments" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemoteAssignmentsDelta === "function" && window.applyRemoteAssignmentsDelta(msg.updates, msg.column) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:logistics_lists") {
+      if (typeof window.applyRemoteLogisticsListsDelta === "function" && window.applyRemoteLogisticsListsDelta(msg) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:finance" && msg.payload) {
+      if (typeof window.applyRemoteFinanceDelta === "function" && window.applyRemoteFinanceDelta(msg.payload) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:receipts" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemoteReceiptsDelta === "function" && window.applyRemoteReceiptsDelta(msg.updates) === true) {
+        handledDirectly = true;
+      }
+      if (typeof window.applyRemoteProfileReceiptsDelta === "function" && window.applyRemoteProfileReceiptsDelta(msg.updates) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:roster") {
+      if (typeof window.applyRemoteRosterDelta === "function" && window.applyRemoteRosterDelta(msg) === true) {
+        handledDirectly = true;
+      }
+    } else if (msg.type === "delta:minutes" && Array.isArray(msg.updates)) {
+      if (typeof window.applyRemoteMinutesDelta === "function" && window.applyRemoteMinutesDelta(msg.updates) === true) {
+        handledDirectly = true;
+      }
+    }
+  } catch (deltaErr) {
+    console.warn("Direct delta apply warning:", deltaErr);
+    handledDirectly = false;
+  }
+
+  const domainSet = new Set();
+  if (Array.isArray(msg.domains)) {
+    msg.domains.forEach((d) => {
+      if (d) domainSet.add(d);
+    });
+  }
+  if (msg.domain) domainSet.add(msg.domain);
+  if (domainSet.size === 0) domainSet.add("all");
+
+  const has = (...ds) => domainSet.has("all") || ds.some((d) => domainSet.has(d));
 
   if (msg.action) {
     invalidateLocalApiCache(msg.action);
   }
+  invalidateLocalApiCacheForDomains(Array.from(domainSet));
+
+  if (handledDirectly) {
+    if (Array.isArray(window.__realtimeListeners)) {
+      window.__realtimeListeners.forEach((fn) => {
+        try {
+          fn(msg);
+        } catch (e) {}
+      });
+    }
+    return;
+  }
 
   try {
-    if (domain === "attendance" || domain === "settings" || domain === "all") {
-      if (typeof window.pollAttendanceNow === "function") window.pollAttendanceNow();
-      if (typeof window.pollIcAttendanceNow === "function") window.pollIcAttendanceNow();
-    }
-    if (domain === "pairings" || domain === "logistics" || domain === "all") {
-      if (typeof window.pollPairingsNow === "function") window.pollPairingsNow();
-    }
-    if (domain === "rooms" || domain === "logistics" || domain === "all") {
-      if (typeof window.pollRoomsNow === "function") window.pollRoomsNow();
-    }
-    if (domain === "logistics" || domain === "roster" || domain === "all") {
-      if (typeof window.pollLogisticsAssignmentsNow === "function") {
-        window.pollLogisticsAssignmentsNow();
-      }
-    }
-    if (domain === "finance" || domain === "receipts" || domain === "all") {
-      if (typeof window.pollFinanceNow === "function") window.pollFinanceNow();
-    }
-    if (domain === "minutes" || domain === "all") {
-      if (typeof window.pollMinutesNow === "function") window.pollMinutesNow();
-    }
-    if (domain === "settings" || domain === "all") {
+    if (has("settings")) {
       if (typeof window.refreshSettingsRealtime === "function") {
-        window.refreshSettingsRealtime();
+        await window.refreshSettingsRealtime(msg);
       }
+    }
+    if (has("roster", "logistics", "pairings", "rooms", "settings")) {
+      if (typeof window.pollRosterNow === "function") window.pollRosterNow(msg);
+      if (typeof window.pollDietNow === "function") window.pollDietNow(msg);
+      if (typeof window.pollMedicalNow === "function") window.pollMedicalNow(msg);
+      if (typeof window.pollExpiredNow === "function") window.pollExpiredNow(msg);
+      if (typeof window.pollOtherNow === "function") window.pollOtherNow(msg);
+    }
+    if (has("attendance", "settings", "logistics", "roster")) {
+      if (typeof window.pollAttendanceNow === "function") window.pollAttendanceNow(msg);
+    }
+    if (has("pairings", "logistics", "roster")) {
+      if (typeof window.pollPairingsNow === "function") window.pollPairingsNow(msg);
+    }
+    if (has("rooms", "logistics", "roster")) {
+      if (typeof window.pollRoomsNow === "function") window.pollRoomsNow(msg);
+    }
+    if (has("logistics", "roster", "settings")) {
+      if (typeof window.pollLogisticsAssignmentsNow === "function") {
+        window.pollLogisticsAssignmentsNow(msg);
+      }
+    }
+    if (has("finance", "receipts", "roster", "logistics")) {
+      if (typeof window.pollFinanceNow === "function") window.pollFinanceNow(msg);
+    }
+    if (has("minutes")) {
+      if (typeof window.pollMinutesNow === "function") window.pollMinutesNow(msg);
+    }
+    if (has("files", "settings")) {
+      if (typeof window.pollFilesNow === "function") window.pollFilesNow(msg);
+    }
+    if (typeof window.pollProfileNow === "function") {
+      window.pollProfileNow(Array.from(domainSet), msg);
+    } else if (has("attendance", "settings") && typeof window.pollIcAttendanceNow === "function") {
+      window.pollIcAttendanceNow(msg);
     }
     if (Array.isArray(window.__realtimeListeners)) {
       window.__realtimeListeners.forEach((fn) => {

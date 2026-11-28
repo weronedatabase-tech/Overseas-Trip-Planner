@@ -528,6 +528,15 @@ function setSyncButtonState(state) {
 
 function triggerPairingSync() {
   setSyncButtonState("saving");
+  if (
+    pendingPairingsMap.size > 0 &&
+    window.LiveSync &&
+    typeof window.LiveSync.sendLive === "function"
+  ) {
+    window.LiveSync.sendLive("live:pairings", {
+      updates: Array.from(pendingPairingsMap.values()),
+    });
+  }
   if (pairingSyncTimeout) clearTimeout(pairingSyncTimeout);
   pairingSyncTimeout = setTimeout(() => {
     executePairingSync();
@@ -584,6 +593,85 @@ async function executePairingSync() {
   }
 }
 
+window.applyRemotePairingsDelta = function (updates) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return false;
+  const logTab = document.getElementById("tab-logistics");
+  if (
+    !logTab ||
+    logTab.classList.contains("hidden-force") ||
+    !globalLogistics ||
+    !Array.isArray(updates) ||
+    updates.length === 0
+  )
+    return false;
+
+  if (!Array.isArray(globalLogistics.pairings)) globalLogistics.pairings = [];
+
+  let hasChanges = false;
+  updates.forEach((sPair) => {
+    if (!sPair || !sPair.traineeNric || !sPair.volNric) return;
+    const tNorm = String(sPair.traineeNric).trim().toUpperCase();
+    const vNorm = String(sPair.volNric).trim().toUpperCase();
+    const keyExact = sPair.traineeNric + "_" + sPair.volNric;
+    const keyNorm = tNorm + "_" + vNorm;
+    if (pendingPairingsMap.has(keyExact) || pendingPairingsMap.has(keyNorm)) return;
+
+    const nextStatus =
+      sPair.status || (sPair.action === "ADD" ? "ACTIVE" : "UNPAIRED");
+    const sTs = Number(sPair.ts) || Date.now();
+
+    let lPair = globalLogistics.pairings.find(
+      (p) =>
+        String(p.traineeNric || "").trim().toUpperCase() === tNorm &&
+        String(p.volNric || "").trim().toUpperCase() === vNorm,
+    );
+    if (lPair) {
+      if (sTs >= (Number(lPair.ts) || 0) && lPair.status !== nextStatus) {
+        lPair.status = nextStatus;
+        lPair.ts = sTs;
+        hasChanges = true;
+      }
+    } else {
+      globalLogistics.pairings.push({
+        traineeNric: sPair.traineeNric,
+        volNric: sPair.volNric,
+        status: nextStatus,
+        ts: sTs,
+      });
+      hasChanges = true;
+    }
+  });
+
+  if (hasChanges && !dndState.el && !dndState.isDragging) {
+    const srcPool = document.getElementById("dnd-source-pool");
+    const tgtList = document.getElementById("dnd-target-list");
+    const prevSrcTop = srcPool ? srcPool.scrollTop : 0;
+    const prevTgtTop = tgtList ? tgtList.scrollTop : 0;
+    renderPairings();
+    if (srcPool) srcPool.scrollTop = prevSrcTop;
+    if (tgtList) tgtList.scrollTop = prevTgtTop;
+
+    const sheet = document.getElementById("selectionBottomSheet");
+    const sheetSearch = document.getElementById("sheetSearchInput");
+    const typingInSheet = sheetSearch && document.activeElement === sheetSearch;
+    if (
+      sheet &&
+      !sheet.classList.contains("hidden-force") &&
+      currentPairingTarget &&
+      !typingInSheet
+    ) {
+      const prevQuery = sheetSearch ? sheetSearch.value : "";
+      openPairingSheet(currentPairingTarget, currentPairingSourceRole);
+      const nextSearch = document.getElementById("sheetSearchInput");
+      if (nextSearch && prevQuery) {
+        nextSearch.value = prevQuery;
+        if (typeof filterBottomSheet === "function") filterBottomSheet();
+      }
+    }
+  }
+  return true;
+};
+
 window.pollPairingsNow = async function () {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
   const logTab = document.getElementById("tab-logistics");
@@ -598,8 +686,8 @@ window.pollPairingsNow = async function () {
 
   const fetchStartTime = Date.now();
   try {
-    const res = await apiCall("fetchPairingsOnly");
-    if (lastLocalChange > fetchStartTime) return;
+    const res = await apiCall("fetchPairingsOnly", { bypassLocalCache: true });
+    if (lastLocalChange > fetchStartTime || pendingPairingsMap.size > 0) return;
 
     if (res.pairings && globalLogistics && globalLogistics.pairings) {
       let hasChanges = false;
@@ -625,14 +713,31 @@ window.pollPairingsNow = async function () {
       });
 
       if (hasChanges && !dndState.el && !dndState.isDragging) {
+        const srcPool = document.getElementById("dnd-source-pool");
+        const tgtList = document.getElementById("dnd-target-list");
+        const prevSrcTop = srcPool ? srcPool.scrollTop : 0;
+        const prevTgtTop = tgtList ? tgtList.scrollTop : 0;
         renderPairings();
+        if (srcPool) srcPool.scrollTop = prevSrcTop;
+        if (tgtList) tgtList.scrollTop = prevTgtTop;
+
         const sheet = document.getElementById("selectionBottomSheet");
+        const sheetSearch = document.getElementById("sheetSearchInput");
+        const typingInSheet =
+          sheetSearch && document.activeElement === sheetSearch;
         if (
           sheet &&
           !sheet.classList.contains("hidden-force") &&
-          currentPairingTarget
+          currentPairingTarget &&
+          !typingInSheet
         ) {
+          const prevQuery = sheetSearch ? sheetSearch.value : "";
           openPairingSheet(currentPairingTarget, currentPairingSourceRole);
+          const nextSearch = document.getElementById("sheetSearchInput");
+          if (nextSearch && prevQuery) {
+            nextSearch.value = prevQuery;
+            if (typeof filterBottomSheet === "function") filterBottomSheet();
+          }
         }
       }
     }
@@ -642,7 +747,7 @@ window.pollPairingsNow = async function () {
 function startPairingPolling() {
   if (pairingPollInterval) clearInterval(pairingPollInterval);
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
-  pairingPollInterval = setInterval(window.pollPairingsNow, 8000);
+  pairingPollInterval = setInterval(window.pollPairingsNow, 45000);
 }
 
 // ==========================================
@@ -1082,6 +1187,9 @@ function queueRoomUpdate(roomId) {
   if (room) {
     pendingRoomUpdates.set(roomId, room);
     setRoomSyncButtonState("saving");
+    if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+      window.LiveSync.sendLive("live:rooms", { updates: [room] });
+    }
     if (roomSyncTimeout) clearTimeout(roomSyncTimeout);
     roomSyncTimeout = setTimeout(() => {
       executeRoomSync();
@@ -1135,6 +1243,247 @@ async function executeRoomSync() {
   }
 }
 
+window.applyRemoteRoomsDelta = function (updates) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return false;
+  const logTab = document.getElementById("tab-logistics");
+  const roomSec = document.getElementById("log-rooms");
+  if (
+    !logTab ||
+    logTab.classList.contains("hidden-force") ||
+    !globalLogistics ||
+    !Array.isArray(updates) ||
+    updates.length === 0
+  )
+    return false;
+
+  if (!Array.isArray(globalLogistics.rooms)) globalLogistics.rooms = [];
+
+  let hasChanges = false;
+  updates.forEach((sRoom) => {
+    if (!sRoom || !sRoom.id || pendingRoomUpdates.has(sRoom.id)) return;
+    let lRoom = globalLogistics.rooms.find((r) => r.id === sRoom.id);
+    const sTs = Number(sRoom.ts) || Date.now();
+    if (lRoom) {
+      if (sTs >= (Number(lRoom.ts) || 0)) {
+        lRoom.name = sRoom.name;
+        lRoom.capacity = sRoom.capacity;
+        lRoom.occupants = Array.isArray(sRoom.occupants) ? [...sRoom.occupants] : [];
+        lRoom.isDeleted = Boolean(sRoom.isDeleted);
+        lRoom.ts = sTs;
+        hasChanges = true;
+      }
+    } else {
+      globalLogistics.rooms.push({
+        ...sRoom,
+        occupants: Array.isArray(sRoom.occupants) ? [...sRoom.occupants] : [],
+        isDeleted: Boolean(sRoom.isDeleted),
+        ts: sTs,
+      });
+      hasChanges = true;
+    }
+  });
+
+  if (
+    hasChanges &&
+    roomSec &&
+    !roomSec.classList.contains("hidden-force") &&
+    !dndState.el &&
+    !dndState.isDragging
+  ) {
+    const pool = document.getElementById("unassignedRoomPool");
+    const list = document.getElementById("roomListContainer");
+    const prevPoolTop = pool ? pool.scrollTop : 0;
+    const prevListTop = list ? list.scrollTop : 0;
+    renderRooms();
+    if (pool) pool.scrollTop = prevPoolTop;
+    if (list) list.scrollTop = prevListTop;
+
+    const sheet = document.getElementById("selectionBottomSheet");
+    const sheetSearch = document.getElementById("sheetSearchInput");
+    const typingInSheet = sheetSearch && document.activeElement === sheetSearch;
+    if (
+      sheet &&
+      !sheet.classList.contains("hidden-force") &&
+      activeRoomTargetId &&
+      !typingInSheet &&
+      typeof openRoomAddSheet === "function"
+    ) {
+      const targetStillExists = globalLogistics.rooms.find(
+        (r) => r.id === activeRoomTargetId && !r.isDeleted,
+      );
+      if (targetStillExists) {
+        const prevQuery = sheetSearch ? sheetSearch.value : "";
+        openRoomAddSheet(activeRoomTargetId);
+        const nextSearch = document.getElementById("sheetSearchInput");
+        if (nextSearch && prevQuery) {
+          nextSearch.value = prevQuery;
+          if (typeof filterBottomSheet === "function") filterBottomSheet();
+        }
+      } else if (typeof closeSelectionSheet === "function") {
+        closeSelectionSheet();
+      }
+    }
+  }
+  return true;
+};
+
+window.applyRemoteAssignmentsDelta = function (updates, column) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return false;
+  const logTab = document.getElementById("tab-logistics");
+  if (
+    !logTab ||
+    logTab.classList.contains("hidden-force") ||
+    !globalLogistics ||
+    !Array.isArray(globalLogistics.participants) ||
+    !Array.isArray(updates) ||
+    updates.length === 0
+  )
+    return false;
+
+  const col = String(column || "");
+  let hasChanges = false;
+  updates.forEach((u) => {
+    if (!u || !u.nric) return;
+    const key = String(u.nric).trim().toUpperCase();
+    if (col === "logisticsGroup" && pendingGroupUpdates.has(u.nric)) return;
+    if (col === "bus" && pendingBusUpdates.has(u.nric)) return;
+    const p = globalLogistics.participants.find(
+      (x) => String(x.nric || "").toUpperCase() === key,
+    );
+    if (!p) return;
+    if (col === "logisticsGroup") {
+      const nextVal = String(u.value || "");
+      if (p.logisticsGroup !== nextVal) {
+        p.logisticsGroup = nextVal;
+        hasChanges = true;
+      }
+      if (nextVal && !activeGroupsList.includes(nextVal)) {
+        activeGroupsList.push(nextVal);
+        try {
+          localStorage.setItem("activeGroupsList", JSON.stringify(activeGroupsList));
+        } catch (e) {}
+        hasChanges = true;
+      }
+    } else if (col === "bus") {
+      const nextVal = String(u.value || "");
+      if (p.bus !== nextVal) {
+        p.bus = nextVal;
+        hasChanges = true;
+      }
+      if (nextVal && !activeBusesList.includes(nextVal)) {
+        activeBusesList.push(nextVal);
+        try {
+          localStorage.setItem("activeBusesList", JSON.stringify(activeBusesList));
+        } catch (e) {}
+        hasChanges = true;
+      }
+    } else if (col === "isGroupIC") {
+      const nextVal = Boolean(u.value);
+      if (Boolean(p.isGroupIC) !== nextVal) {
+        p.isGroupIC = nextVal;
+        hasChanges = true;
+      }
+    }
+  });
+
+  if (hasChanges && (!dndState || (!dndState.el && !dndState.isDragging))) {
+    const scrollIds = [
+      "dnd-source-pool",
+      "dnd-target-list",
+      "unassignedRoomPool",
+      "roomListContainer",
+      "unassignedGroupPool",
+      "groupListContainer",
+      "unassignedBusPool",
+      "busListContainer",
+    ];
+    const savedScroll = {};
+    scrollIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) savedScroll[id] = el.scrollTop;
+    });
+    if (col === "logisticsGroup" || col === "isGroupIC") {
+      renderGroups();
+      renderPairings();
+      renderRooms();
+    }
+    if (col === "bus") {
+      renderBuses();
+    }
+    scrollIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && savedScroll[id] !== undefined) el.scrollTop = savedScroll[id];
+    });
+  }
+  return true;
+};
+
+window.applyRemoteLogisticsListsDelta = function (msg) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return false;
+  if (!msg || !msg.listType) return false;
+
+  if (msg.listType === "group") {
+    if (msg.action === "add" && msg.name && !activeGroupsList.includes(msg.name)) {
+      activeGroupsList.push(msg.name);
+    } else if (msg.action === "remove" && msg.name) {
+      activeGroupsList = activeGroupsList.filter((x) => x !== msg.name);
+      if (globalLogistics && Array.isArray(globalLogistics.participants)) {
+        globalLogistics.participants.forEach((p) => {
+          if (p.logisticsGroup === msg.name) p.logisticsGroup = "";
+        });
+      }
+    } else if (msg.action === "rename" && msg.oldName && msg.name) {
+      const idx = activeGroupsList.indexOf(msg.oldName);
+      if (idx !== -1) activeGroupsList[idx] = msg.name;
+      else if (!activeGroupsList.includes(msg.name)) activeGroupsList.push(msg.name);
+      if (globalLogistics && Array.isArray(globalLogistics.participants)) {
+        globalLogistics.participants.forEach((p) => {
+          if (p.logisticsGroup === msg.oldName) p.logisticsGroup = msg.name;
+        });
+      }
+    }
+    try {
+      localStorage.setItem("activeGroupsList", JSON.stringify(activeGroupsList));
+    } catch (e) {}
+    const logTab = document.getElementById("tab-logistics");
+    if (logTab && !logTab.classList.contains("hidden-force")) {
+      renderGroups();
+    }
+    return true;
+  }
+
+  if (msg.listType === "bus") {
+    if (msg.action === "add" && msg.name && !activeBusesList.includes(msg.name)) {
+      activeBusesList.push(msg.name);
+    } else if (msg.action === "remove" && msg.name) {
+      activeBusesList = activeBusesList.filter((x) => x !== msg.name);
+      if (globalLogistics && Array.isArray(globalLogistics.participants)) {
+        globalLogistics.participants.forEach((p) => {
+          if (p.bus === msg.name) p.bus = "";
+        });
+      }
+    } else if (msg.action === "rename" && msg.oldName && msg.name) {
+      const idx = activeBusesList.indexOf(msg.oldName);
+      if (idx !== -1) activeBusesList[idx] = msg.name;
+      else if (!activeBusesList.includes(msg.name)) activeBusesList.push(msg.name);
+      if (globalLogistics && Array.isArray(globalLogistics.participants)) {
+        globalLogistics.participants.forEach((p) => {
+          if (p.bus === msg.oldName) p.bus = msg.name;
+        });
+      }
+    }
+    try {
+      localStorage.setItem("activeBusesList", JSON.stringify(activeBusesList));
+    } catch (e) {}
+    const logTab = document.getElementById("tab-logistics");
+    if (logTab && !logTab.classList.contains("hidden-force")) {
+      renderBuses();
+    }
+    return true;
+  }
+  return false;
+};
+
 let roomPollInterval = null;
 window.pollRoomsNow = async function () {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
@@ -1143,8 +1492,6 @@ window.pollRoomsNow = async function () {
   if (
     !logTab ||
     logTab.classList.contains("hidden-force") ||
-    !roomSec ||
-    roomSec.classList.contains("hidden-force") ||
     isRoomSyncing ||
     pendingRoomUpdates.size > 0 ||
     (dndState.type === "rooming" && (dndState.el || dndState.isDragging))
@@ -1153,8 +1500,8 @@ window.pollRoomsNow = async function () {
 
   const fetchStartTime = Date.now();
   try {
-    const res = await apiCall("fetchRoomsOnly");
-    if (lastLocalChange > fetchStartTime) return;
+    const res = await apiCall("fetchRoomsOnly", { bypassLocalCache: true });
+    if (lastLocalChange > fetchStartTime || pendingRoomUpdates.size > 0) return;
 
     if (res.rooms && globalLogistics && globalLogistics.rooms) {
       let hasChanges = false;
@@ -1176,8 +1523,20 @@ window.pollRoomsNow = async function () {
           }
         }
       });
-      if (hasChanges && !dndState.el && !dndState.isDragging) {
+      if (
+        hasChanges &&
+        roomSec &&
+        !roomSec.classList.contains("hidden-force") &&
+        !dndState.el &&
+        !dndState.isDragging
+      ) {
+        const pool = document.getElementById("unassignedRoomPool");
+        const list = document.getElementById("roomListContainer");
+        const prevPoolTop = pool ? pool.scrollTop : 0;
+        const prevListTop = list ? list.scrollTop : 0;
         renderRooms();
+        if (pool) pool.scrollTop = prevPoolTop;
+        if (list) list.scrollTop = prevListTop;
       }
     }
   } catch (e) {}
@@ -1199,36 +1558,61 @@ window.pollLogisticsAssignmentsNow = async function () {
 
   const fetchStartTime = Date.now();
   try {
-    const res = await apiCall("fetchLogistics");
-    if (lastLocalChange > fetchStartTime) return;
-    if (res && res.participants && globalLogistics && globalLogistics.participants) {
-      let groupChanged = false;
-      let busChanged = false;
-      res.participants.forEach((sPart) => {
-        const lPart = globalLogistics.participants.find(
-          (p) => p.nric === sPart.nric,
-        );
+    const res = await apiCall("fetchLogistics", { bypassLocalCache: true });
+    if (
+      lastLocalChange > fetchStartTime ||
+      pendingGroupUpdates.size > 0 ||
+      pendingBusUpdates.size > 0
+    )
+      return;
+    if (res && Array.isArray(res.participants) && globalLogistics) {
+      const prevParts = globalLogistics.participants || [];
+      const prevSig = JSON.stringify(prevParts);
+      const nextParts = res.participants.map((sPart) => {
+        const lPart = prevParts.find((p) => p.nric === sPart.nric);
         if (lPart) {
-          if (
-            !pendingGroupUpdates.has(sPart.nric) &&
-            (lPart.logisticsGroup !== sPart.logisticsGroup ||
-              lPart.isGroupIC !== sPart.isGroupIC)
-          ) {
-            lPart.logisticsGroup = sPart.logisticsGroup;
-            lPart.isGroupIC = sPart.isGroupIC;
-            groupChanged = true;
+          if (pendingGroupUpdates.has(sPart.nric)) {
+            sPart.logisticsGroup = lPart.logisticsGroup;
+            sPart.isGroupIC = lPart.isGroupIC;
           }
-          if (
-            !pendingBusUpdates.has(sPart.nric) &&
-            lPart.bus !== sPart.bus
-          ) {
-            lPart.bus = sPart.bus;
-            busChanged = true;
+          if (pendingBusUpdates.has(sPart.nric)) {
+            sPart.bus = lPart.bus;
           }
         }
+        return sPart;
       });
-      if (groupChanged) renderGroups();
-      if (busChanged) renderBuses();
+      if (typeof processDisplayNames === "function") processDisplayNames(nextParts);
+      const sortedNext =
+        typeof applyGlobalSorting === "function"
+          ? applyGlobalSorting(nextParts)
+          : nextParts;
+      const nextSig = JSON.stringify(sortedNext);
+      if (nextSig !== prevSig) {
+        globalLogistics.participants = sortedNext;
+        const scrollIds = [
+          "dnd-source-pool",
+          "dnd-target-list",
+          "unassignedRoomPool",
+          "roomListContainer",
+          "unassignedGroupPool",
+          "groupListContainer",
+          "unassignedBusPool",
+          "busListContainer",
+        ];
+        const savedScroll = {};
+        scrollIds.forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) savedScroll[id] = el.scrollTop;
+        });
+        renderPairings();
+        renderRooms();
+        renderGroups();
+        renderBuses();
+        scrollIds.forEach((id) => {
+          const el = document.getElementById(id);
+          if (el && savedScroll[id] !== undefined) el.scrollTop = savedScroll[id];
+        });
+      }
     }
   } catch (e) {}
 };
@@ -1236,7 +1620,7 @@ window.pollLogisticsAssignmentsNow = async function () {
 function startRoomPolling() {
   if (roomPollInterval) clearInterval(roomPollInterval);
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
-  roomPollInterval = setInterval(window.pollRoomsNow, 10000);
+  roomPollInterval = setInterval(window.pollRoomsNow, 45000);
 }
 
 window.stopLogisticsPolling = function () {
@@ -1887,6 +2271,12 @@ window.handleGroupDrop = async function (nric, groupName) {
     }
 
     p.isGroupIC = false;
+    if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+      window.LiveSync.sendLive("live:assignments", {
+        updates: [{ nric: nric, value: false }],
+        column: "isGroupIC",
+      });
+    }
     try {
       await apiCall("syncAssignments", {
         updates: [{ nric: nric, value: false }],
@@ -2148,12 +2538,32 @@ async function manualSyncBuses() {
 
 let groupSyncTimeout = null;
 function triggerGroupSync() {
+  if (
+    pendingGroupUpdates.size > 0 &&
+    window.LiveSync &&
+    typeof window.LiveSync.sendLive === "function"
+  ) {
+    window.LiveSync.sendLive("live:assignments", {
+      updates: Array.from(pendingGroupUpdates.values()),
+      column: "logisticsGroup",
+    });
+  }
   if (groupSyncTimeout) clearTimeout(groupSyncTimeout);
   groupSyncTimeout = setTimeout(executeGroupSync, 2500);
 }
 
 let busSyncTimeout = null;
 function triggerBusSync() {
+  if (
+    pendingBusUpdates.size > 0 &&
+    window.LiveSync &&
+    typeof window.LiveSync.sendLive === "function"
+  ) {
+    window.LiveSync.sendLive("live:assignments", {
+      updates: Array.from(pendingBusUpdates.values()),
+      column: "bus",
+    });
+  }
   if (busSyncTimeout) clearTimeout(busSyncTimeout);
   busSyncTimeout = setTimeout(executeBusSync, 2500);
 }
@@ -2248,6 +2658,11 @@ async function loadLogisticsData() {
     renderBuses();
     const overlay = document.getElementById("logLoadingOverlay");
     if (overlay) overlay.classList.add("hidden-force");
+    startPairingPolling();
+    startRoomPolling();
+    window.pollPairingsNow();
+    window.pollRoomsNow();
+    window.pollLogisticsAssignmentsNow();
     return;
   }
   const overlay = document.getElementById("logLoadingOverlay");
@@ -3199,11 +3614,25 @@ async function addGroupBusFromPopup() {
         "activeGroupsList",
         JSON.stringify(activeGroupsList),
       );
+      if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+        window.LiveSync.sendLive("live:logistics_lists", {
+          listType: "group",
+          action: "add",
+          name: val,
+        });
+      }
     }
   } else {
     if (!activeBusesList.includes(val)) {
       activeBusesList.push(val);
       localStorage.setItem("activeBusesList", JSON.stringify(activeBusesList));
+      if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+        window.LiveSync.sendLive("live:logistics_lists", {
+          listType: "bus",
+          action: "add",
+          name: val,
+        });
+      }
     }
   }
   renderGroupBusOptions();
@@ -3233,6 +3662,13 @@ async function removeGroupBusFromPopup(val) {
     });
     activeGroupsList = activeGroupsList.filter((x) => x !== val);
     localStorage.setItem("activeGroupsList", JSON.stringify(activeGroupsList));
+    if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+      window.LiveSync.sendLive("live:logistics_lists", {
+        listType: "group",
+        action: "remove",
+        name: val,
+      });
+    }
     renderGroups();
     if (pendingGroupUpdates.size > 0) triggerGroupSync();
   } else {
@@ -3244,6 +3680,13 @@ async function removeGroupBusFromPopup(val) {
     });
     activeBusesList = activeBusesList.filter((x) => x !== val);
     localStorage.setItem("activeBusesList", JSON.stringify(activeBusesList));
+    if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+      window.LiveSync.sendLive("live:logistics_lists", {
+        listType: "bus",
+        action: "remove",
+        name: val,
+      });
+    }
     renderBuses();
     if (pendingBusUpdates.size > 0) triggerBusSync();
   }
@@ -3598,6 +4041,13 @@ window.assignICToGroupFromSheet = async function (nric, gName) {
   renderGroups();
   window.openGroupICSheet(gName); // refresh sheet to show updated status
 
+  if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+    window.LiveSync.sendLive("live:assignments", {
+      updates: updates,
+      column: "isGroupIC",
+    });
+  }
+
   showToast(newValue ? "Assigning Group IC..." : "Removing Group IC...");
   try {
     await apiCall("syncAssignments", { updates: updates, column: "isGroupIC" });
@@ -3689,6 +4139,14 @@ window.promptEditGroup = async function (oldName) {
       pendingGroupUpdates.set(p.nric, { nric: p.nric, value: val });
     }
   });
+  if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+    window.LiveSync.sendLive("live:logistics_lists", {
+      listType: "group",
+      action: "rename",
+      oldName,
+      name: val,
+    });
+  }
   renderGroups();
   if (pendingGroupUpdates.size > 0) triggerGroupSync();
 };
@@ -3719,6 +4177,14 @@ window.promptEditBus = async function (oldName) {
       pendingBusUpdates.set(p.nric, { nric: p.nric, value: val });
     }
   });
+  if (window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+    window.LiveSync.sendLive("live:logistics_lists", {
+      listType: "bus",
+      action: "rename",
+      oldName,
+      name: val,
+    });
+  }
   renderBuses();
   if (pendingBusUpdates.size > 0) triggerBusSync();
 };

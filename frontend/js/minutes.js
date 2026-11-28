@@ -78,6 +78,7 @@ async function loadInitialMinutes() {
     startMinutesPolling();
     const loader = document.getElementById("minutesLoadingOverlay");
     if (loader) loader.classList.add("hidden-force");
+    window.pollMinutesNow();
     return;
   }
   const overlay = document.getElementById("minutesLoadingOverlay");
@@ -190,16 +191,48 @@ function handleMinuteInput(id, field, value) {
   }
 }
 
+let minutesLivePushTimeout = null;
 function queueMinuteUpdate(id) {
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
   pendingMinutesUpdates.set(id, minutesMap.get(id));
   updateMinutesSyncUI("saving");
+
+  // Stream instant live WebSocket delta (200ms micro-debounce while typing)
+  if (minutesLivePushTimeout) clearTimeout(minutesLivePushTimeout);
+  minutesLivePushTimeout = setTimeout(() => {
+    if (pendingMinutesUpdates.size > 0 && window.LiveSync && typeof window.LiveSync.sendLive === "function") {
+      window.LiveSync.sendLive("live:minutes", {
+        updates: Array.from(pendingMinutesUpdates.values()),
+      });
+    }
+  }, 200);
 
   if (minutesSyncTimeout) clearTimeout(minutesSyncTimeout);
   minutesSyncTimeout = setTimeout(() => {
     executeMinutesSync();
   }, 1500);
 }
+
+window.applyRemoteMinutesDelta = function (updates) {
+  if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
+  const tab = document.getElementById("tab-minutes");
+  if (!tab || tab.classList.contains("hidden-force") || !Array.isArray(updates)) return;
+
+  let hasChanges = false;
+  updates.forEach((sNote) => {
+    if (!sNote || !sNote.id) return;
+    const lNote = minutesMap.get(sNote.id);
+    if (!lNote || ((sNote.ts || 0) >= (lNote.ts || 0) && !pendingMinutesUpdates.has(sNote.id))) {
+      minutesMap.set(sNote.id, sNote);
+      updateNoteDOM(sNote);
+      hasChanges = true;
+    }
+  });
+  if (hasChanges && pendingMinutesUpdates.size === 0) {
+    updateMinutesSyncUI("saved");
+  }
+  return true;
+};
 
 async function executeMinutesSync() {
   if (pendingMinutesUpdates.size === 0) return;
@@ -252,8 +285,8 @@ window.pollMinutesNow = async function () {
   const fetchStartTime = Date.now();
 
   try {
-    const res = await apiCall("fetchMinutes");
-    if (lastLocalChange > fetchStartTime) return;
+    const res = await apiCall("fetchMinutes", { bypassLocalCache: true });
+    if (lastLocalChange > fetchStartTime || pendingMinutesUpdates.size > 0) return;
 
     if (res.minutes) {
       let hasRemoteChanges = false;
@@ -279,7 +312,7 @@ window.pollMinutesNow = async function () {
 function startMinutesPolling() {
   if (minutesPollInterval) clearInterval(minutesPollInterval);
   if (typeof window.isArchiveReadOnly === "function" && window.isArchiveReadOnly()) return;
-  minutesPollInterval = setInterval(window.pollMinutesNow, 8000);
+  minutesPollInterval = setInterval(window.pollMinutesNow, 45000);
 }
 
 function stopMinutesPolling() {
